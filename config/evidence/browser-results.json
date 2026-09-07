@@ -1,0 +1,51 @@
+{
+  "measurements": [
+    {
+      "width": 375,
+      "scrollWidth": 375,
+      "font": "Outfit, sans-serif",
+      "sidebar": "290px",
+      "background": "rgb(249, 250, 251)"
+    },
+    {
+      "width": 768,
+      "scrollWidth": 768,
+      "font": "Outfit, sans-serif",
+      "sidebar": "290px",
+      "background": "rgb(249, 250, 251)"
+    },
+    {
+      "width": 991,
+      "scrollWidth": 991,
+      "font": "Outfit, sans-serif",
+      "sidebar": "290px",
+      "background": "rgb(249, 250, 251)"
+    },
+    {
+      "width": 1024,
+      "scrollWidth": 1024,
+      "font": "Outfit, sans-serif",
+      "sidebar": "290px",
+      "background": "rgb(249, 250, 251)"
+    },
+    {
+      "width": 1280,
+      "scrollWidth": 1280,
+      "font": "Outfit, sans-serif",
+      "sidebar": "290px",
+      "background": "rgb(249, 250, 251)"
+    },
+    {
+      "width": 1536,
+      "scrollWidth": 1536,
+      "font": "Outfit, sans-serif",
+      "sidebar": "290px",
+      "background": "rgb(249, 250, 251)"
+    }
+  ],
+  "javascript_errors": [],
+  "signup_login": true,
+  "modal_create": true,
+  "validation_preserved": true,
+  "native_post": true
+}

@@ -1,0 +1,10 @@
+{
+  "server_failure": true,
+  "permission_denied": true,
+  "conflict": true,
+  "network_failure": true,
+  "slow_spinner": true,
+  "double_submit_blocked": true,
+  "overlay_cleanup": true,
+  "expired_session_redirect": true
+}

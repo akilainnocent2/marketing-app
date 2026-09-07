@@ -1,3 +1,573 @@
-from django.shortcuts import render
+import uuid,json,calendar
+from datetime import date
+from decimal import Decimal, InvalidOperation
+from urllib.parse import urlencode
+from django.contrib import messages
+from django.contrib.auth import get_user_model, login
+from django.contrib.auth.models import Group
+from django.contrib.auth.decorators import login_required
+from django.contrib.auth.views import LoginView
+from django.core.cache import cache
+from django.core.exceptions import PermissionDenied, ValidationError
+from django.core.paginator import Paginator
+from django.db import transaction, IntegrityError
+from django.db.models import Q, Sum, Count
+from django.http import JsonResponse, HttpResponse, FileResponse, Http404
+from django.shortcuts import render, redirect, get_object_or_404
+from django.urls import reverse
+from django.utils import timezone
+from django.views.decorators.http import require_POST, require_GET
+from .models import *
+from .forms import SignupForm
+from .registry import REGISTRY,permission
+from .selectors import scoped,require,locations,eligible_users,total
+from .services import commission,audit,save_policy,financial_open
 
-# Create your views here.
+class RateLimitedLogin(LoginView):
+    template_name='api/auth.html'
+    extra_context={'title':'Sign in','subtitle':'Enter your username and password to sign in.','action':'Sign in'}
+    def form_valid(self, form):
+        if cache.get(self.key(),0)>=10:
+            form.add_error(None,'Too many attempts. Please try again in 15 minutes.')
+            return self.form_invalid(form)
+        return super().form_valid(form)
+    def key(self):
+        import hashlib
+        return 'login:'+hashlib.sha256((self.request.META.get('REMOTE_ADDR','')+self.request.POST.get('username','').lower()).encode()).hexdigest()
+    def form_invalid(self,form):
+        cache.set(self.key(),cache.get(self.key(),0)+1,900)
+        return super().form_invalid(form)
+
+
+def signup(request):
+    if request.user.is_authenticated: return redirect('api:dashboard')
+    form=SignupForm(request.POST or None)
+    if request.method=='POST' and form.is_valid():
+        with transaction.atomic():
+            user=form.save()
+            # Assign a fixed least-privilege permission set; never trust submitted roles.
+            from django.contrib.auth.models import Permission
+            allowed=['view_customer','add_customer','change_customer','delete_customer','view_sale','add_sale','change_sale','delete_sale','view_expenditure','add_expenditure','change_expenditure','delete_expenditure','view_reports','export_reports','view_commissionpolicy']
+            user.user_permissions.set(Permission.objects.filter(content_type__app_label='api',codename__in=allowed))
+            audit(user,'signup',user)
+        login(request,user)
+        return redirect('api:dashboard')
+    return render(request,'api/auth.html',{'form':form,'title':'Create an account','subtitle':'Start managing your customers, sales, and expenses.','action':'Create account','signup':True})
+
+
+def dataset(request,kind,action='view'):
+    if kind not in REGISTRY: raise Http404
+    require(request.user,permission(kind,action))
+    model=REGISTRY[kind][0]
+    if issubclass(model,OwnedRecord): return scoped(model,request.user,action!='view')
+    if kind=='commissions' and not request.user.has_perm('api.manage_commissions'): return model.objects.filter(marketer=request.user)
+    if kind=='locations': return locations(request.user)
+    return model.objects.all()
+
+
+def filtered(request,kind,qs):
+    fields=REGISTRY[kind][4]; searches=REGISTRY[kind][5]
+    q=request.GET.get('q','').strip()[:150]
+    if q:
+        expr=Q()
+        for field in searches: expr |= Q(**{field+'__icontains':q})
+        qs=qs.filter(expr)
+    model=REGISTRY[kind][0]
+    if issubclass(model,OwnedRecord):
+        for key,lookup in [('from','date__gte'),('to','date__lte')]:
+            if request.GET.get(key):
+                try: value=date.fromisoformat(request.GET[key])
+                except ValueError: raise ValidationError('Use a valid date filter.')
+                qs=qs.filter(**{lookup:value})
+        if request.GET.get('marketer'):
+            if not request.user.has_perm('api.view_all_marketing') and request.GET['marketer'] != str(request.user.pk): raise PermissionDenied
+            try: qs=qs.filter(marketer_id=int(request.GET['marketer']))
+            except ValueError: raise ValidationError('Invalid marketer.')
+        if request.GET.get('status'):
+            allowed=dict(model._meta.get_field('status').choices)
+            if request.GET['status'] not in allowed: raise ValidationError('Invalid status.')
+            qs=qs.filter(status=request.GET['status'])
+        for key,lookup in [('min','amount__gte'),('max','amount__lte')]:
+            if request.GET.get(key) and 'amount' in fields:
+                try:
+                    amount=Decimal(request.GET[key])
+                    if not amount.is_finite(): raise InvalidOperation
+                except InvalidOperation: raise ValidationError('Invalid amount.')
+                qs=qs.filter(**{lookup:amount})
+        if kind=='customers' and request.GET.get('potential') in ['yes','no']: qs=qs.filter(potential=request.GET['potential']=='yes')
+    if kind in ['customers','expenditures'] and request.GET.get('location'):
+        root=get_object_or_404(locations(request.user),pk=request.GET['location'])
+        ids=[root.pk]; frontier=[root.pk]
+        for _ in range(4):
+            frontier=list(locations(request.user).filter(parent_id__in=frontier).values_list('pk',flat=True));ids.extend(frontier)
+        qs=qs.filter(location_id__in=ids)
+    if kind=='sales' and request.GET.get('period'):
+        period=get_object_or_404(CommissionPeriod,pk=request.GET['period']);qs=qs.filter(date__range=(period.start,period.end))
+    if kind=='expenditures':
+        if request.GET.get('type'):
+            types=ExpenditureType.objects.all()
+            if not request.user.has_perm('api.view_all_marketing'):types=types.filter(Q(creator=None)|Q(creator=request.user))
+            selected=get_object_or_404(types,pk=request.GET['type']);qs=qs.filter(expenditure_type=selected)
+        if request.GET.get('payment'):
+            if request.GET['payment'] not in dict(Expenditure._meta.get_field('payment_method').choices):raise ValidationError('Invalid payment method.')
+            qs=qs.filter(payment_method=request.GET['payment'])
+        if request.GET.get('receipt') in ['yes','no']:qs=qs.exclude(receipt='') if request.GET['receipt']=='yes' else qs.filter(receipt='')
+    if kind=='logs':
+        for key,lookup in [('from','timestamp__date__gte'),('to','timestamp__date__lte')]:
+            if request.GET.get(key):
+                try:value=date.fromisoformat(request.GET[key])
+                except ValueError:raise ValidationError('Invalid log date filter.')
+                qs=qs.filter(**{lookup:value})
+        for key in ['action','outcome','target_type']:
+            if request.GET.get(key):qs=qs.filter(**{key:request.GET[key][:60]})
+        if request.GET.get('actor'):
+            actor=get_object_or_404(get_user_model(),pk=request.GET['actor']);qs=qs.filter(actor=actor)
+    sort=request.GET.get('sort','')
+    if sort and sort.lstrip('-') in fields: qs=qs.order_by(sort,'pk')
+    elif not model._meta.ordering: qs=qs.order_by('-pk')
+    return qs
+
+
+def columns(request,kind):
+    allowed=REGISTRY[kind][4]
+    selected=request.GET.getlist('columns')
+    if not selected:
+        obj=Profile.objects.filter(user=request.user).first()
+        selected=obj.columns.get(kind,[]) if obj else []
+    return [x for x in allowed if x in selected] or allowed
+
+
+@login_required
+def listing(request,kind):
+    qs=dataset(request,kind)
+    if getattr(request,'report_mode',False):
+        require(request.user,'api.view_reports')
+        if not request.user.has_perm('api.view_all_reports'):qs=qs.filter(marketer=request.user)
+    error=None
+    try: qs=filtered(request,kind,qs)
+    except ValidationError as e: error=' '.join(e.messages); qs=qs.none()
+    model,form,title,module,fields,_=REGISTRY[kind]
+    if issubclass(model,OwnedRecord): qs=qs.select_related('marketer')
+    page=Paginator(qs,15).get_page(request.GET.get('page'))
+    params=request.GET.copy(); params.pop('page',None)
+    ctx={'title':title,'module':module,'kind':kind,'page':page,'columns':columns(request,kind),'all_columns':fields,'query':params.urlencode(),'error':error,'can_add':bool(form) and request.user.has_perm(permission(kind,'add')),'can_change':bool(form) and request.user.has_perm(permission(kind,'change')),'can_delete':kind in ['customers','sales','expenditures','users','groups','periods','commissions','expenditure-types'] and request.user.has_perm(permission(kind,'delete')),'amount_total':total(qs) if 'amount' in fields else None,'count':page.paginator.count}
+    ctx['statuses']=model._meta.get_field('status').choices if issubclass(model,OwnedRecord) else []
+    ctx['period_options']=CommissionPeriod.objects.all() if kind=='sales' else []
+    ctx['filter_users']=eligible_users(request.user)[:100] if request.user.has_perm('api.view_all_marketing') else []
+    return render(request,'api/partials/list_content.html' if request.headers.get('HX-Request') else 'api/list.html',ctx)
+
+
+def form_response(request,context,status=200):
+    context['enhanced']=bool(request.headers.get('HX-Request'))
+    return render(request,'api/partials/form.html' if context['enhanced'] else 'api/form_page.html',context,status=status)
+
+
+@login_required
+def edit(request,kind,pk=None):
+    qs=dataset(request,kind,'change' if pk else 'add')
+    model,formclass,title,module,_,_=REGISTRY[kind]
+    if not formclass: raise Http404
+    if module=='Settings': require(request.user,'api.manage_commissions' if kind in ['commissions','periods'] else permission(kind,'change' if pk else 'add'))
+    obj=get_object_or_404(qs,pk=pk) if pk else model()
+    if kind=='sales' and pk and obj.status!='draft': require(request.user,'api.confirm_sale')
+    kwargs={'instance':obj}
+    if kind in ['customers','sales','expenditures','commissions','users','groups']: kwargs['user']=request.user
+    initial={}
+    if kind=='customers' and not pk:
+        profile,_=Profile.objects.get_or_create(user=request.user)
+        initial={'reuse_location':profile.reuse_location,'location':profile.last_location if profile.reuse_location else None}
+    form=formclass(request.POST if request.method=='POST' else None,request.FILES or None,initial=initial,**kwargs)
+    if request.method=='POST' and issubclass(model,OwnedRecord):
+        try:
+            prior=Operation.objects.filter(token=uuid.UUID(request.POST.get('token','')),owner=request.user,kind=kind,result__isnull=False).first()
+            if prior: return saved_response(request,kind)
+        except ValueError: pass
+    if request.method=='POST' and form.is_valid():
+        try:
+            with transaction.atomic():
+                history={}
+                owned=issubclass(model,OwnedRecord)
+                if owned:
+                    token=form.cleaned_data['token']
+                    op,created=Operation.objects.get_or_create(token=token,defaults={'owner':request.user,'kind':kind})
+                    if not created:
+                        if op.owner_id!=request.user.pk or op.kind!=kind: raise PermissionDenied
+                        if op.result: return saved_response(request,kind)
+                        raise ValidationError('This request is still processing. Retry shortly.')
+                    if pk:
+                        current=get_object_or_404(dataset(request,kind,'change').select_for_update(),pk=pk)
+                        if current.version!=form.cleaned_data['version']: raise ValidationError('This record changed in another tab. Reopen it before saving.')
+                        financial_open(current)
+                        history['before']={f:str(getattr(current,f)) for f in ['date','status','version']+(['amount'] if hasattr(current,'amount') else [])}
+                    instance=form.save(commit=False)
+                    instance.marketer=form.cleaned_data.get('marketer') or (current.marketer if pk else request.user)
+                    if not pk: instance.created_by=request.user
+                    instance.updated_by=request.user
+                    instance.version=(current.version+1) if pk else 1
+                    financial_open(instance)
+                    did=form.cleaned_data.get('draft_id')
+                    if did:
+                        draft=get_object_or_404(Draft.objects.select_for_update(),pk=did,owner=request.user,kind=kind,target=pk)
+                        if draft.complete or draft.version!=form.cleaned_data.get('draft_version') or (pk and draft.target_version!=current.version): raise ValidationError('Draft changed in another tab. Resume the latest draft before saving.')
+                        draft.complete=True; draft.save()
+                    instance.save(); op.result=instance.pk; op.save()
+                    if kind=='customers':
+                        Profile.objects.update_or_create(user=request.user,defaults={'reuse_location':form.cleaned_data['reuse_location'],'last_location':instance.location})
+                elif kind=='commissions': instance=save_policy(form.save(commit=False),request.user,form.cleaned_data['reason'])
+                else:
+                    instance=form.save(commit=False)
+                    if kind=='expenditure-types': instance.identity='shared:'+instance.name.strip().casefold()
+                    if kind=='locations':
+                        instance.normalized_name=''.join(c for c in instance.name.casefold() if c.isalnum())
+                        instance.creator=None if form.cleaned_data['shared'] else request.user
+                        if not instance.identity:instance.identity=f'{instance.creator_id or 0}:{instance.parent_id or 0}:{instance.level}:{instance.normalized_name}'
+                    if kind=='users' and form.cleaned_data.get('password'): instance.set_password(form.cleaned_data['password'])
+                    instance.save(); form.save_m2m()
+                if owned:
+                    history['after']={f:str(getattr(instance,f)) for f in ['date','status','version']+(['amount'] if hasattr(instance,'amount') else [])}
+                    history['reason']=form.cleaned_data.get('correction_reason','')
+                audit(request.user,'updated' if pk else 'created',instance,history or {'fields':[x for x in form.changed_data if x in ['amount','status','base','rate','active','is_active','potential','date']]})
+            return saved_response(request,kind)
+        except (ValidationError,IntegrityError) as e:
+            form.add_error(None,' '.join(e.messages) if isinstance(e,ValidationError) else 'A matching record already exists. Refresh and try again.')
+    return form_response(request,{'form':form,'title':('Edit ' if pk else 'Add ')+title.lower(),'kind':kind,'object':obj,'module':module,'action':'Save changes' if pk else 'Save '+title.lower(),'post_url':request.path,'draft_enabled':kind in ['customers','sales','expenditures'],'target_id':pk or ''},422 if request.method=='POST' else 200)
+
+
+def saved_response(request,kind):
+    messages.success(request,'Changes saved successfully.')
+    if request.headers.get('HX-Request'):
+        response=HttpResponse(status=204); response['HX-Trigger']=json.dumps({'recordSaved':{'another':bool(request.POST.get('another')),'url':reverse('api:add',args=[kind])}}); return response
+    if request.POST.get('another'):return redirect('api:add',kind=kind)
+    return redirect('api:list',kind=kind)
+
+
+@login_required
+def detail(request,kind,pk):
+    obj=get_object_or_404(dataset(request,kind),pk=pk)
+    return form_response(request,{'title':str(obj),'object':obj,'detail_columns':REGISTRY[kind][4]+({'customers':['comment','description','address','created_by','updated_by'],'sales':['description','created_by','updated_by'],'expenditures':['description','payment_method','vendor','reference','customer','location','created_by','updated_by'],'logs':['summary','correlation','target_id'],'users':['groups']}.get(kind,[])),'kind':kind})
+
+
+@login_required
+def transition(request,kind,pk,action):
+    if kind not in ['customers','sales','expenditures'] or action not in ['delete','confirm']: raise Http404
+    obj=get_object_or_404(dataset(request,kind,'change' if action=='confirm' else 'delete'),pk=pk)
+    if action=='confirm' or (kind=='sales' and obj.status!='draft'): require(request.user,'api.confirm_sale')
+    if request.method=='POST':
+        try:
+            with transaction.atomic():
+                obj=get_object_or_404(dataset(request,kind,'change' if action=='confirm' else 'delete').select_for_update(),pk=pk)
+                financial_open(obj)
+                if action=='confirm' and (kind!='sales' or obj.status!='draft'): raise ValidationError('Only a draft sale can be confirmed.')
+                obj.status='confirmed' if action=='confirm' else 'archived' if kind=='customers' else 'void'
+                obj.version+=1; obj.updated_by=request.user; obj.save()
+                audit(request.user,action,obj,{'status':obj.status})
+            return saved_response(request,kind)
+        except ValidationError as e: return form_response(request,{'title':'Action unavailable','error':' '.join(e.messages)},422)
+    return form_response(request,{'title':('Confirm ' if action=='confirm' else 'Archive / void ')+str(obj),'confirmation':'This changes the record status and recalculates affected totals. Its history is retained.','post_url':request.path,'action':'Confirm sale' if action=='confirm' else 'Archive / void'})
+
+
+@login_required
+@require_GET
+def location_options(request):
+    if not any(request.user.has_perm(permission(k,'add')) or request.user.has_perm(permission(k,'change')) for k in ['customers','expenditures']): raise PermissionDenied
+    level=request.GET.get('level','region'); parent=request.GET.get('parent_id')
+    if level not in dict(Location.LEVELS): return JsonResponse({'error':'Invalid level'},status=400)
+    qs=locations(request.user).filter(level=level)
+    if parent:
+        p=get_object_or_404(locations(request.user),pk=parent)
+        levels=list(dict(Location.LEVELS))
+        if levels.index(level)!=levels.index(p.level)+1: return JsonResponse({'error':'Invalid parent level'},status=400)
+        qs=qs.filter(parent=p)
+    elif level!='region': return JsonResponse({'results':[],'more':False})
+    else: qs=qs.filter(parent=None)
+    normalized=''.join(c for c in request.GET.get('q','').casefold() if c.isalnum())
+    qs=qs.filter(normalized_name__contains=normalized)
+    page=Paginator(qs,30).get_page(request.GET.get('page'))
+    return JsonResponse({'results':[{'id':x.pk,'label':x.name} for x in page],'more':page.has_next()})
+
+
+@login_required
+@require_POST
+def custom_option(request,kind):
+    require(request.user,'api.add_customer' if kind=='location' else 'api.add_expenditure')
+    name=' '.join(request.POST.get('name','').split())[:100]
+    if not name: return JsonResponse({'error':'Enter a name.'},status=422)
+    if kind=='location':
+        level=request.POST.get('level'); levels=list(dict(Location.LEVELS))
+        if level not in levels: return JsonResponse({'error':'Invalid level'},status=422)
+        parent=None
+        if level!='region':
+            parent=get_object_or_404(locations(request.user),pk=request.POST.get('parent_id'))
+            if levels.index(level)!=levels.index(parent.level)+1: return JsonResponse({'error':'Invalid hierarchy'},status=422)
+        norm=''.join(c for c in name.casefold() if c.isalnum())
+        existing=locations(request.user).filter(parent=parent,level=level,normalized_name=norm).first()
+        obj=existing or Location.objects.get_or_create(identity=f'{request.user.pk}:{parent.pk if parent else 0}:{level}:{norm}',defaults={'name':name,'normalized_name':norm,'level':level,'parent':parent,'creator':request.user})[0]
+    elif kind=='type':
+        obj=ExpenditureType.objects.get_or_create(identity=f'{request.user.pk}:{name.casefold()}',defaults={'name':name,'creator':request.user})[0]
+    else: raise Http404
+    return JsonResponse({'id':obj.pk,'label':obj.name})
+
+
+@login_required
+@require_POST
+def draft_save(request,kind):
+    if kind not in ['customers','sales','expenditures']: raise Http404
+    target=request.POST.get('target')
+    current=None
+    if target:
+        current=get_object_or_404(dataset(request,kind,'change'),pk=target)
+        if kind=='sales' and current.status!='draft':require(request.user,'api.confirm_sale')
+    else: dataset(request,kind,'add')
+    allowed=REGISTRY[kind][1]._meta.fields
+    payload={k:request.POST[k] for k in allowed if k in request.POST and k not in ['receipt','marketer']}
+    try:
+        with transaction.atomic():
+            if request.POST.get('draft_id'):
+                draft=get_object_or_404(Draft.objects.select_for_update(),pk=request.POST['draft_id'],owner=request.user,kind=kind,target=target or None)
+                if draft.complete or draft.version!=int(request.POST.get('draft_version',-1)): return JsonResponse({'error':'Draft conflict. Reopen to resume the latest version.'},status=409)
+            else: draft=Draft(owner=request.user,kind=kind,target=target or None,target_version=current.version if current else None)
+            if payload.get('location'): get_object_or_404(locations(request.user),pk=payload['location'])
+            if payload.get('customer'): get_object_or_404(scoped(Customer,request.user),pk=payload['customer'])
+            draft.payload=payload; draft.version+=1; draft.save()
+        return JsonResponse({'id':str(draft.pk),'version':draft.version})
+    except (ValueError,ValidationError): return JsonResponse({'error':'Invalid draft.'},status=422)
+
+
+@login_required
+def draft_resume(request,kind):
+    target=request.GET.get('target')
+    if target: get_object_or_404(dataset(request,kind,'change'),pk=target)
+    else: dataset(request,kind,'add')
+    draft=Draft.objects.filter(owner=request.user,kind=kind,target=target or None,complete=False).order_by('-updated_at').first()
+    return JsonResponse({'id':str(draft.pk),'version':draft.version,'payload':draft.payload,'target_version':draft.target_version} if draft else {})
+
+
+@login_required
+def receipt(request,pk):
+    obj=get_object_or_404(dataset(request,'expenditures'),pk=pk)
+    if not obj.receipt: raise Http404
+    return FileResponse(obj.receipt.open('rb'),as_attachment=True,filename='receipt'+__import__('pathlib').Path(obj.receipt.name).suffix)
+
+
+@login_required
+def dashboard(request):
+    if not request.user.has_perm('api.view_reports'):
+        for kind in REGISTRY:
+            if request.user.has_perm(permission(kind)): return redirect('api:list',kind=kind)
+        return render(request,'api/no_access.html',status=403)
+    return report_view(request,False)
+
+
+@login_required
+def reports(request):
+    require(request.user,'api.view_reports')
+    return report_view(request,True)
+
+
+def report_view(request,is_report):
+    user=request.user
+    # Reports require both report and dataset permissions.
+    kinds=[k for k in ['customers','sales','expenditures'] if user.has_perm(permission(k))]
+    qs={k:scoped(REGISTRY[k][0],user) for k in kinds}
+    if not user.has_perm('api.view_all_reports'):
+        qs={k:q.filter(marketer=user) for k,q in qs.items()}
+    counts=qs['customers'].filter(status='finalized').count() if 'customers' in qs else None
+    sales=total(qs['sales'].filter(status='confirmed')) if 'sales' in qs else None
+    expenses=total(qs['expenditures'].filter(status='recorded')) if 'expenditures' in qs else None
+    periods=CommissionPeriod.objects.all()
+    period=get_object_or_404(periods,pk=request.GET['period']) if request.GET.get('period') else periods.filter(start__lte=timezone.localdate(),end__gte=timezone.localdate()).first()
+    users=get_user_model().objects.filter(is_active=True) if user.has_perm('api.view_all_reports') and user.has_perm('api.view_all_marketing') else get_user_model().objects.filter(pk=user.pk)
+    users=users.order_by('first_name','username')
+    cards=[]
+    if request.GET.get('marketer'):
+        if not user.has_perm('api.view_all_reports') and request.GET['marketer']!=str(user.pk):raise PermissionDenied
+        users=users.filter(pk=request.GET['marketer'])
+    if 'sales' in kinds and period:
+        from .services import commission_batch
+        cards=commission_batch(users,period)
+        customer_counts=dict(qs['customers'].filter(status='finalized').values('marketer_id').annotate(n=Count('pk')).values_list('marketer_id','n')) if 'customers' in qs else {}
+        expense_sums=dict(qs['expenditures'].filter(status='recorded',date__range=(period.start,period.end)).values('marketer_id').annotate(n=Sum('amount')).values_list('marketer_id','n')) if 'expenditures' in qs else {}
+        for c in cards:
+            c['customers']=customer_counts.get(c['marketer'].pk,0)
+            c['expense']=expense_sums.get(c['marketer'].pk,Decimal('0.00'))
+    earned=sum((c['commission'] for c in cards if c['configured']),Decimal('0.00')) if cards and all(c['configured'] for c in cards) else None
+    marketer_page=Paginator(cards,18).get_page(request.GET.get('page'))
+    cards=list(marketer_page)
+    chart=[]
+    for month in range(1,13):
+        value=total(qs['sales'].filter(status='confirmed',date__year=timezone.localdate().year,date__month=month)) if 'sales' in qs else Decimal(0)
+        chart.append({'month':calendar.month_abbr[month],'value':value})
+    maximum=max([x['value'] for x in chart]+[Decimal(1)])
+    for x in chart: x['height']=int(x['value']/maximum*100)
+    recent=qs['sales'].select_related('marketer','customer')[:5] if 'sales' in qs else []
+    return render(request,'api/dashboard.html',{'title':'Reports overview' if is_report else 'Dashboard','is_report':is_report,'customer_count':counts,'sales_total':sales,'expense_total':expenses,'earned':earned,'cards':cards,'period':period,'periods':periods,'chart':chart,'recent':recent,'year':timezone.localdate().year,'marketer_page':marketer_page,'sales_less_expense':sales-expenses if sales is not None and expenses is not None else None})
+
+@login_required
+def bulk(request):
+    from .forms import BulkPolicyForm
+    from django.core import signing
+    require(request.user,'api.manage_commissions'); require(request.user,'api.add_commissionpolicy'); require(request.user,'api.change_commissionpolicy')
+    form=BulkPolicyForm(request.POST if request.method=='POST' else None,user=request.user)
+    preview=None
+    if request.method=='POST' and form.is_valid():
+        d=form.cleaned_data
+        prior=Operation.objects.filter(token=d['token'],owner=request.user,kind='bulk',result__isnull=False).first()
+        if prior and request.POST.get('commit'):return saved_response(request,'commissions')
+        fingerprint={'users':sorted(u.pk for u in d['marketers']),'period':d['period'].pk,'base':str(d['base']),'rate':str(d['rate']),'reason':d['reason'],'actor':request.user.pk,'token':str(d['token'])}
+        preview=[]
+        for user in d['marketers']:
+            old=CommissionPolicy.objects.filter(marketer=user,period=d['period']).first()
+            preview.append({'user':user,'base':old.base if old else None,'rate':old.rate if old else None,'version':old.version if old else 0})
+        fingerprint['versions']=[p['version'] for p in preview]
+        if request.POST.get('commit'):
+            try:
+                signed=signing.loads(request.POST.get('preview_token',''),max_age=900,salt='bulk')
+                if signed!=fingerprint: raise ValidationError('Policies or selection changed. Preview again before applying.')
+                with transaction.atomic():
+                    op,created=Operation.objects.get_or_create(token=d['token'],defaults={'owner':request.user,'kind':'bulk'})
+                    if not created:
+                        if op.owner_id!=request.user.pk or op.kind!='bulk': raise PermissionDenied
+                        return saved_response(request,'commissions')
+                    for user in d['marketers']:
+                        policy=CommissionPolicy.objects.select_for_update().filter(marketer=user,period=d['period']).first() or CommissionPolicy(marketer=user,period=d['period'])
+                        policy.base=d['base'];policy.rate=d['rate'];policy.active=True
+                        save_policy(policy,request.user,d['reason'])
+                        audit(request.user,'bulk_policy_assignment',policy,{'base':str(d['base']),'rate':str(d['rate'])},d['token'])
+                    op.result=len(preview);op.save()
+                return saved_response(request,'commissions')
+            except (signing.BadSignature,ValidationError,IntegrityError) as e:
+                form.add_error(None,' '.join(e.messages) if isinstance(e,ValidationError) else 'Bulk assignment could not be applied. Preview again.');preview=None
+        preview_token=signing.dumps(fingerprint,salt='bulk')
+    else: preview_token=''
+    return render(request,'api/bulk.html',{'title':'Bulk commission assignment','module':'Settings','form':form,'preview':preview,'preview_token':preview_token,'action':'Preview changes'})
+
+
+@login_required
+def export(request,kind):
+    from .pdf import build_pdf
+    require(request.user,'api.view_reports');require(request.user,'api.export_reports')
+    if kind not in ['customers','sales','expenditures']: raise Http404
+    qs=dataset(request,kind)
+    if not request.user.has_perm('api.view_all_reports'): qs=qs.filter(marketer=request.user)
+    try: qs=filtered(request,kind,qs)
+    except ValidationError as e: return HttpResponse(' '.join(e.messages),status=400)
+    if qs.count()>5000: return HttpResponse('Narrow your filters to 5,000 rows or fewer.',status=422)
+    cols=columns(request,kind)
+    result=build_pdf(request,kind,qs,cols)
+    response=HttpResponse(result,content_type='application/pdf')
+    response['Content-Disposition']=f'attachment; filename="marketflow-{kind}.pdf"'
+    return response
+
+@login_required
+def profile(request):
+    from .forms import ProfileForm
+    obj,_=Profile.objects.get_or_create(user=request.user)
+    form=ProfileForm(request.POST if request.method=='POST' else None,instance=obj,initial={k:getattr(request.user,k) for k in ['first_name','last_name','email']})
+    if request.method=='POST' and form.is_valid():
+        with transaction.atomic():
+            form.save()
+            for k in ['first_name','last_name','email']: setattr(request.user,k,form.cleaned_data[k])
+            request.user.save(update_fields=['first_name','last_name','email'])
+            audit(request.user,'profile_updated',obj)
+        messages.success(request,'Your profile has been updated.');return redirect('api:profile')
+    return form_response(request,{'title':'My profile','form':form,'action':'Save profile','module':'Account','post_url':request.path})
+
+
+@login_required
+@require_GET
+def lookup(request,kind):
+    if kind=='location':
+        if not (request.user.has_perm('api.view_location') or request.user.has_perm('api.add_customer')):raise PermissionDenied
+        qs=locations(request.user).filter(name__icontains=request.GET.get('q','')[:100])
+    elif kind=='marketer':
+        require(request.user,'api.assign_marketer');require(request.user,'api.manage_all_marketing');qs=eligible_users(request.user)
+        q=request.GET.get('q','')[:100];qs=qs.filter(Q(username__icontains=q)|Q(first_name__icontains=q)|Q(last_name__icontains=q))
+    elif kind=='customer':
+        require(request.user,'api.view_customer');qs=scoped(Customer,request.user).filter(status='finalized')
+        owner=request.GET.get('marketer')
+        if owner:
+            if str(owner)!=str(request.user.pk) and not request.user.has_perm('api.assign_marketer'):raise PermissionDenied
+            qs=qs.filter(marketer_id=owner)
+        else:qs=qs.filter(marketer=request.user)
+        qs=qs.filter(Q(name__icontains=request.GET.get('q','')[:100])|Q(phone__icontains=request.GET.get('q','')[:100]))
+    elif kind=='expenditure_type':
+        require(request.user,'api.add_expenditure')
+        qs=ExpenditureType.objects.filter(active=True)
+        if not request.user.has_perm('api.manage_all_marketing'):qs=qs.filter(Q(creator=None)|Q(creator=request.user))
+        qs=qs.filter(name__icontains=request.GET.get('q','')[:100])
+    else: raise Http404
+    page=Paginator(qs.order_by('pk'),30).get_page(request.GET.get('page'))
+    return JsonResponse({'results':[{'id':obj.pk,'label':str(obj)} for obj in page],'more':page.has_next()})
+
+
+@login_required
+@require_POST
+def preferences(request,kind):
+    dataset(request,kind)
+    allowed=REGISTRY[kind][4]
+    cols=[x for x in request.POST.getlist('columns') if x in allowed]
+    obj,_=Profile.objects.get_or_create(user=request.user)
+    obj.columns={**obj.columns,kind:cols or allowed};obj.save(update_fields=['columns'])
+    return JsonResponse({'saved':True})
+
+
+@login_required
+@require_GET
+def phone_validation(request):
+    require(request.user,'api.view_customer')
+    from .forms import CustomerForm
+    form=CustomerForm(user=request.user,data={'phone':request.GET.get('phone','')})
+    form.is_valid()
+    if 'phone' in form.errors:return JsonResponse({'error':form.errors['phone'][0]})
+    phone=form.cleaned_data.get('phone')
+    return JsonResponse({'warning':'A customer with this phone number already exists in your authorized records.' if scoped(Customer,request.user).filter(phone=phone,status='finalized').exists() else '', 'normalized':phone})
+
+
+@login_required
+@require_POST
+def discard_draft(request,pk):
+    draft=get_object_or_404(Draft,pk=pk,owner=request.user,complete=False)
+    draft.complete=True;draft.version+=1;draft.save(update_fields=['complete','version'])
+    return JsonResponse({'discarded':True})
+
+@login_required
+def report_detail(request,kind):
+    if kind not in ['customers','sales','expenditures']:raise Http404
+    request.report_mode=True
+    return listing(request,kind)
+
+
+@login_required
+@require_GET
+def policy_preview(request):
+    from .services import calculate_commission
+    require(request.user,'api.manage_commissions')
+    try:
+        values={k:Decimal(request.GET.get(k,'0')) for k in ['sales','base','rate']}
+        if any(not x.is_finite() or x<0 for x in values.values()) or values['rate']>100:raise ValueError
+        return JsonResponse(calculate_commission(values['sales'],values['base'],values['rate']))
+    except (ValueError,InvalidOperation):return JsonResponse({'error':'Enter nonnegative sales/base and a rate from 0 to 100.'},status=422)
+
+
+@login_required
+def remove_setting(request,kind,pk):
+    if kind not in ['users','groups','periods','commissions','expenditure-types']:raise Http404
+    obj=get_object_or_404(dataset(request,kind,'delete'),pk=pk)
+    if kind in ['periods','commissions']:require(request.user,'api.manage_commissions')
+    if kind=='users':
+        if obj.is_superuser and (not request.user.is_superuser or obj.is_active and get_user_model().objects.filter(is_active=True,is_superuser=True).count()<=1):raise PermissionDenied
+        if not request.user.is_superuser and (obj.is_staff or not obj.get_all_permissions().issubset(request.user.get_all_permissions())):raise PermissionDenied
+    if kind=='groups' and not request.user.is_superuser:
+        for p in obj.permissions.select_related('content_type'):
+            if not request.user.has_perm(f'{p.content_type.app_label}.{p.codename}'):raise PermissionDenied
+    if request.method=='POST':
+        from django.db.models.deletion import ProtectedError
+        try:
+            with transaction.atomic():
+                if kind=='commissions' and (obj.period.closed or Sale.objects.filter(marketer=obj.marketer,status='confirmed',date__range=(obj.period.start,obj.period.end)).exists()):raise ValidationError('Policies with counted sales or closed periods cannot be deleted. Use a policy correction.')
+                audit(request.user,'deleted',obj)
+                obj.delete()
+            return saved_response(request,kind)
+        except (ProtectedError,ValidationError) as e:
+            return form_response(request,{'title':'Record retained','error':' '.join(e.messages) if isinstance(e,ValidationError) else 'This record is referenced by historical data. Deactivate it instead.'},422)
+    return form_response(request,{'title':'Delete '+str(obj),'confirmation':'Delete this record only if it has no protected history. Referenced records will be retained.','kind':kind,'action':'Delete','post_url':request.path})

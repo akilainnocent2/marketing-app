@@ -1,0 +1,4 @@
+Reset your MarketFlow password:
+{{ protocol }}://{{ domain }}{% url 'api:password_reset_confirm' uidb64=uid token=token %}
+
+If you did not request this, ignore this message.

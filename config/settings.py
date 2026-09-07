@@ -15,17 +15,15 @@ from pathlib import Path
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/5.0/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = "django-insecure-94dese&02a@%)_(po!gggf94(&c!9hc-g9zm+)@nl!&@nks%-^"
+SECRET_KEY = ""  # Loaded from the environment below.
 
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = []
 
 
 # Application definition
@@ -121,3 +119,56 @@ STATIC_URL = "static/"
 # https://docs.djangoproject.com/en/5.0/ref/settings/#default-auto-field
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
+
+# Environment overrides; all generated data stays inside this checkout.
+import os
+from dotenv import load_dotenv
+load_dotenv(Path(__file__).parent / '.env')
+APP_ROOT = Path(__file__).resolve().parent
+DEBUG = os.getenv('DEBUG', 'true').lower() == 'true'
+SECRET_KEY = os.getenv('SECRET_KEY', 'local-development-only-change-before-deploying')
+if not DEBUG and SECRET_KEY == 'local-development-only-change-before-deploying':
+    raise RuntimeError('Set SECRET_KEY in production')
+def env_list(name, default=''):
+    return [value.strip() for value in os.getenv(name, default).split(',') if value.strip()]
+
+
+ALLOWED_HOSTS = env_list('ALLOWED_HOSTS', 'localhost,127.0.0.1,testserver')
+CSRF_TRUSTED_ORIGINS = env_list('CSRF_TRUSTED_ORIGINS')
+# Trust only this Codespace's configured app ports, even when .env supplies localhost.
+CODESPACE_NAME = os.getenv('CODESPACE_NAME', '').strip()
+if CODESPACE_NAME:
+    forwarding_domain = os.getenv('GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN', 'app.github.dev').strip()
+    for port in env_list('CODESPACE_APP_PORTS', '8000'):
+        host = f'{CODESPACE_NAME}-{port}.{forwarding_domain}'
+        ALLOWED_HOSTS.append(host)
+        CSRF_TRUSTED_ORIGINS.append(f'https://{host}')
+    # Codespaces terminates HTTPS at its forwarding proxy.
+    SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+INSTALLED_APPS += ['config.api.apps.ApiConfig', 'django.contrib.humanize']
+TIME_ZONE = 'Africa/Dar_es_Salaam'
+DATABASES['default']['NAME'] = os.getenv('SQLITE_PATH', str(APP_ROOT / 'db.sqlite3'))
+STATIC_URL = '/static/'
+STATIC_ROOT = APP_ROOT / 'staticfiles'
+MEDIA_ROOT = APP_ROOT / 'private-media'
+LOGIN_URL = 'api:login'
+LOGIN_REDIRECT_URL = 'api:dashboard'
+LOGOUT_REDIRECT_URL = 'api:login'
+MIDDLEWARE.insert(1, 'whitenoise.middleware.WhiteNoiseMiddleware')
+TEMPLATES[0]['OPTIONS']['context_processors'].append('config.api.context.navigation')
+SESSION_COOKIE_SECURE = not DEBUG
+CSRF_COOKIE_SECURE = not DEBUG
+SECURE_SSL_REDIRECT = not DEBUG
+X_FRAME_OPTIONS = 'DENY'
+DATA_UPLOAD_MAX_MEMORY_SIZE = 8 * 1024 * 1024
+DEFAULT_FROM_EMAIL = os.getenv('DEFAULT_FROM_EMAIL', 'noreply@example.com')
+EMAIL_BACKEND = os.getenv('EMAIL_BACKEND', 'django.core.mail.backends.console.EmailBackend')
+MIDDLEWARE.append('config.api.middleware.RequestContext')
+# No forwarded IP is trusted by default. Configure HTTPS at the reverse proxy.
+EMAIL_HOST = os.getenv('EMAIL_HOST', '')
+EMAIL_PORT = int(os.getenv('EMAIL_PORT', '587'))
+EMAIL_HOST_USER = os.getenv('EMAIL_HOST_USER', '')
+EMAIL_HOST_PASSWORD = os.getenv('EMAIL_HOST_PASSWORD', '')
+EMAIL_USE_TLS = os.getenv('EMAIL_USE_TLS', 'true').lower() == 'true'
+PASSWORD_RESET_ENABLED = bool(EMAIL_HOST)
+CACHES = {'default': {'BACKEND': 'django.core.cache.backends.filebased.FileBasedCache', 'LOCATION': APP_ROOT / '.cache'}}
