@@ -1,0 +1,82 @@
+{
+  "measurements": [
+    {
+      "width": 375,
+      "scrollWidth": 375
+    },
+    {
+      "width": 768,
+      "scrollWidth": 768
+    },
+    {
+      "width": 1024,
+      "scrollWidth": 1024
+    },
+    {
+      "width": 1536,
+      "scrollWidth": 1536
+    }
+  ],
+  "javascript_errors": [],
+  "financial_action_requests": [
+    {
+      "url": "http://127.0.0.1:8002/dashboard/?marketer=&period=2&marketer=2",
+      "method": "GET",
+      "type": "fetch",
+      "navigation": false
+    },
+    {
+      "url": "http://127.0.0.1:8002/dashboard/?marketer=&period=2&marketer=2&marketer=3",
+      "method": "GET",
+      "type": "fetch",
+      "navigation": false
+    },
+    {
+      "url": "http://127.0.0.1:8002/dashboard/?marketer=&period=2&marketer=2",
+      "method": "GET",
+      "type": "fetch",
+      "navigation": false
+    },
+    {
+      "url": "http://127.0.0.1:8002/dashboard/?period=2",
+      "method": "GET",
+      "type": "fetch",
+      "navigation": false
+    },
+    {
+      "url": "http://127.0.0.1:8002/records/commissions/add/?marketer=5&period=2",
+      "method": "GET",
+      "type": "fetch",
+      "navigation": false
+    },
+    {
+      "url": "http://127.0.0.1:8002/settings/commissions/preview/?marketer=5&period=2&base=0&rate=0",
+      "method": "GET",
+      "type": "fetch",
+      "navigation": false
+    },
+    {
+      "url": "http://127.0.0.1:8002/settings/commissions/preview/?marketer=5&period=2&base=1000000&rate=2",
+      "method": "GET",
+      "type": "fetch",
+      "navigation": false
+    },
+    {
+      "url": "http://127.0.0.1:8002/records/commissions/add/",
+      "method": "POST",
+      "type": "xhr",
+      "navigation": false
+    },
+    {
+      "url": "http://127.0.0.1:8002/dashboard/?period=2",
+      "method": "GET",
+      "type": "fetch",
+      "navigation": false
+    }
+  ],
+  "selected_global": true,
+  "policy_setup_no_navigation": true,
+  "bulk_no_navigation": true,
+  "sort_no_navigation": true,
+  "back_forward": true
+}

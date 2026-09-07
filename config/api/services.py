@@ -21,11 +21,6 @@ def commission(marketer, period):
     return dict(configured=True,period=period,**calculate_commission(sales,policy.base,policy.rate))
 
 
-def validate_period(period):
-    if CommissionPeriod.objects.exclude(pk=period.pk).filter(start__lte=period.end,end__gte=period.start).exists():
-        raise ValidationError('Commission periods cannot overlap.')
-
-
 def financial_open(obj):
     if isinstance(obj, Sale) and CommissionPeriod.objects.filter(start__lte=obj.date,end__gte=obj.date,closed=True).exists():
         raise ValidationError('This commission period is closed. Reopen it before correcting sales.')
@@ -33,9 +28,15 @@ def financial_open(obj):
 
 @transaction.atomic
 def save_policy(policy, actor, reason=''):
-    if policy.period.closed: raise ValidationError('This period is closed.')
+    period=CommissionPeriod.objects.select_for_update().get(pk=policy.period_id)
+    administrator = actor.has_perm('api.manage_commissions') and actor.has_perm('api.change_commissionpolicy')
+    if period.closed and not administrator: raise ValidationError('This period is closed.')
+    policy.period=period
     previous = CommissionPolicy.objects.select_for_update().filter(pk=policy.pk).first() if policy.pk else None
+    if previous and policy.version != previous.version:
+        raise ValidationError('This policy changed in another tab. Reopen it before saving.')
     counted = Sale.objects.filter(marketer=policy.marketer,status='confirmed',date__range=(policy.period.start,policy.period.end)).exists()
+    if administrator and not reason: reason = 'Administrative policy correction'
     if counted and not reason: raise ValidationError('A correction reason is required because this period has confirmed sales. Review the whole-period impact before saving.')
     if previous:
         PolicyRevision.objects.create(policy=previous,version=previous.version,base=previous.base,rate=previous.rate,actor=actor,reason=reason or 'Policy update')

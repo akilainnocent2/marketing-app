@@ -1,0 +1,2 @@
+
+1 static file copied to '/workspaces/codespaces-blank/config/staticfiles', 210 unmodified.

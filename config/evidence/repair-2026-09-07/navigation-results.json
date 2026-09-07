@@ -1,0 +1,311 @@
+{
+  "card_pagination": true,
+  "table_pagination": true,
+  "repeated_filters_columns": true,
+  "detail_filters_preserve_finance": true,
+  "stale_response_ignored": true,
+  "module_document_navigation": true,
+  "javascript_errors": [],
+  "requests": [
+    {
+      "url": "http://127.0.0.1:8002/accounts/login/",
+      "type": "document",
+      "navigation": true
+    },
+    {
+      "url": "http://127.0.0.1:8002/static/app/tailwind.css",
+      "type": "stylesheet",
+      "navigation": false
+    },
+    {
+      "url": "http://127.0.0.1:8002/static/app/app.css",
+      "type": "stylesheet",
+      "navigation": false
+    },
+    {
+      "url": "http://127.0.0.1:8002/static/app/theme.js",
+      "type": "script",
+      "navigation": false
+    },
+    {
+      "url": "http://127.0.0.1:8002/static/app/app.js",
+      "type": "script",
+      "navigation": false
+    },
+    {
+      "url": "http://127.0.0.1:8002/static/app/fonts/outfit-latin-600-normal.woff2",
+      "type": "font",
+      "navigation": false
+    },
+    {
+      "url": "http://127.0.0.1:8002/static/app/fonts/outfit-latin-500-normal.woff2",
+      "type": "font",
+      "navigation": false
+    },
+    {
+      "url": "http://127.0.0.1:8002/static/app/fonts/outfit-latin-400-normal.woff2",
+      "type": "font",
+      "navigation": false
+    },
+    {
+      "url": "http://127.0.0.1:8002/accounts/login/",
+      "type": "document",
+      "navigation": true
+    },
+    {
+      "url": "http://127.0.0.1:8002/dashboard/",
+      "type": "document",
+      "navigation": true
+    },
+    {
+      "url": "http://127.0.0.1:8002/static/app/tailwind.css",
+      "type": "stylesheet",
+      "navigation": false
+    },
+    {
+      "url": "http://127.0.0.1:8002/static/app/app.css",
+      "type": "stylesheet",
+      "navigation": false
+    },
+    {
+      "url": "http://127.0.0.1:8002/static/app/theme.js",
+      "type": "script",
+      "navigation": false
+    },
+    {
+      "url": "http://127.0.0.1:8002/static/app/htmx.min.js",
+      "type": "script",
+      "navigation": false
+    },
+    {
+      "url": "http://127.0.0.1:8002/static/app/app.js",
+      "type": "script",
+      "navigation": false
+    },
+    {
+      "url": "http://127.0.0.1:8002/static/app/fonts/outfit-latin-400-normal.woff2",
+      "type": "font",
+      "navigation": false
+    },
+    {
+      "url": "http://127.0.0.1:8002/static/app/fonts/outfit-latin-500-normal.woff2",
+      "type": "font",
+      "navigation": false
+    },
+    {
+      "url": "http://127.0.0.1:8002/static/app/fonts/outfit-latin-600-normal.woff2",
+      "type": "font",
+      "navigation": false
+    },
+    {
+      "url": "http://127.0.0.1:8002/dashboard/?period=2",
+      "type": "document",
+      "navigation": true
+    },
+    {
+      "url": "http://127.0.0.1:8002/static/app/tailwind.css",
+      "type": "stylesheet",
+      "navigation": false
+    },
+    {
+      "url": "http://127.0.0.1:8002/static/app/app.css",
+      "type": "stylesheet",
+      "navigation": false
+    },
+    {
+      "url": "http://127.0.0.1:8002/static/app/theme.js",
+      "type": "script",
+      "navigation": false
+    },
+    {
+      "url": "http://127.0.0.1:8002/static/app/htmx.min.js",
+      "type": "script",
+      "navigation": false
+    },
+    {
+      "url": "http://127.0.0.1:8002/static/app/app.js",
+      "type": "script",
+      "navigation": false
+    },
+    {
+      "url": "http://127.0.0.1:8002/static/app/fonts/outfit-latin-400-normal.woff2",
+      "type": "font",
+      "navigation": false
+    },
+    {
+      "url": "http://127.0.0.1:8002/static/app/fonts/outfit-latin-500-normal.woff2",
+      "type": "font",
+      "navigation": false
+    },
+    {
+      "url": "http://127.0.0.1:8002/static/app/fonts/outfit-latin-600-normal.woff2",
+      "type": "font",
+      "navigation": false
+    },
+    {
+      "url": "http://127.0.0.1:8002/dashboard/?period=2&page=2",
+      "type": "fetch",
+      "navigation": false
+    },
+    {
+      "url": "http://127.0.0.1:8002/marketing/sales/?period=2&marketer=2&marketer=3&columns=reference&columns=amount",
+      "type": "document",
+      "navigation": true
+    },
+    {
+      "url": "http://127.0.0.1:8002/static/app/tailwind.css",
+      "type": "stylesheet",
+      "navigation": false
+    },
+    {
+      "url": "http://127.0.0.1:8002/static/app/app.css",
+      "type": "stylesheet",
+      "navigation": false
+    },
+    {
+      "url": "http://127.0.0.1:8002/static/app/theme.js",
+      "type": "script",
+      "navigation": false
+    },
+    {
+      "url": "http://127.0.0.1:8002/static/app/htmx.min.js",
+      "type": "script",
+      "navigation": false
+    },
+    {
+      "url": "http://127.0.0.1:8002/static/app/app.js",
+      "type": "script",
+      "navigation": false
+    },
+    {
+      "url": "http://127.0.0.1:8002/static/app/fonts/outfit-latin-400-normal.woff2",
+      "type": "font",
+      "navigation": false
+    },
+    {
+      "url": "http://127.0.0.1:8002/static/app/fonts/outfit-latin-500-normal.woff2",
+      "type": "font",
+      "navigation": false
+    },
+    {
+      "url": "http://127.0.0.1:8002/static/app/fonts/outfit-latin-600-normal.woff2",
+      "type": "font",
+      "navigation": false
+    },
+    {
+      "url": "http://127.0.0.1:8002/marketing/sales/?period=2&marketer=2&marketer=3&columns=reference&columns=amount&page=2",
+      "type": "fetch",
+      "navigation": false
+    },
+    {
+      "url": "http://127.0.0.1:8002/preferences/sales/",
+      "type": "fetch",
+      "navigation": false
+    },
+    {
+      "url": "http://127.0.0.1:8002/marketing/sales/?marketer=2&marketer=3&q=Page-draft&from=&to=&min=&max=&status=&period=2&columns=reference&columns=amount",
+      "type": "fetch",
+      "navigation": false
+    },
+    {
+      "url": "http://127.0.0.1:8002/dashboard/?period=2",
+      "type": "document",
+      "navigation": true
+    },
+    {
+      "url": "http://127.0.0.1:8002/static/app/tailwind.css",
+      "type": "stylesheet",
+      "navigation": false
+    },
+    {
+      "url": "http://127.0.0.1:8002/static/app/app.css",
+      "type": "stylesheet",
+      "navigation": false
+    },
+    {
+      "url": "http://127.0.0.1:8002/static/app/theme.js",
+      "type": "script",
+      "navigation": false
+    },
+    {
+      "url": "http://127.0.0.1:8002/static/app/htmx.min.js",
+      "type": "script",
+      "navigation": false
+    },
+    {
+      "url": "http://127.0.0.1:8002/static/app/app.js",
+      "type": "script",
+      "navigation": false
+    },
+    {
+      "url": "http://127.0.0.1:8002/static/app/fonts/outfit-latin-400-normal.woff2",
+      "type": "font",
+      "navigation": false
+    },
+    {
+      "url": "http://127.0.0.1:8002/static/app/fonts/outfit-latin-500-normal.woff2",
+      "type": "font",
+      "navigation": false
+    },
+    {
+      "url": "http://127.0.0.1:8002/static/app/fonts/outfit-latin-600-normal.woff2",
+      "type": "font",
+      "navigation": false
+    },
+    {
+      "url": "http://127.0.0.1:8002/dashboard/?marketer=&period=2&marketer=2",
+      "type": "fetch",
+      "navigation": false
+    },
+    {
+      "url": "http://127.0.0.1:8002/dashboard/?marketer=&period=2&marketer=3",
+      "type": "fetch",
+      "navigation": false
+    },
+    {
+      "url": "http://127.0.0.1:8002/marketing/customers/",
+      "type": "document",
+      "navigation": true
+    },
+    {
+      "url": "http://127.0.0.1:8002/static/app/tailwind.css",
+      "type": "stylesheet",
+      "navigation": false
+    },
+    {
+      "url": "http://127.0.0.1:8002/static/app/app.css",
+      "type": "stylesheet",
+      "navigation": false
+    },
+    {
+      "url": "http://127.0.0.1:8002/static/app/theme.js",
+      "type": "script",
+      "navigation": false
+    },
+    {
+      "url": "http://127.0.0.1:8002/static/app/htmx.min.js",
+      "type": "script",
+      "navigation": false
+    },
+    {
+      "url": "http://127.0.0.1:8002/static/app/app.js",
+      "type": "script",
+      "navigation": false
+    },
+    {
+      "url": "http://127.0.0.1:8002/static/app/fonts/outfit-latin-600-normal.woff2",
+      "type": "font",
+      "navigation": false
+    },
+    {
+      "url": "http://127.0.0.1:8002/static/app/fonts/outfit-latin-400-normal.woff2",
+      "type": "font",
+      "navigation": false
+    },
+    {
+      "url": "http://127.0.0.1:8002/static/app/fonts/outfit-latin-500-normal.woff2",
+      "type": "font",
+      "navigation": false
+    }
+  ]
+}

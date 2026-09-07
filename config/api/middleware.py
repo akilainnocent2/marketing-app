@@ -14,5 +14,5 @@ class RequestContext:
         if response.status_code==403 and getattr(request,'user',None) and request.user.is_authenticated:
             AuditLog.objects.create(actor=request.user,action='access_denied',outcome='denied',correlation=request.correlation_id,summary={'method':request.method})
         if request.headers.get('HX-Request') and response.status_code==302 and '/accounts/login/' in response.get('Location',''):
-            response=HttpResponse(status=200,headers={'HX-Redirect':response['Location']})
+            response=HttpResponse('Your session expired. Sign in again in another tab, then retry.',status=401)
         return response

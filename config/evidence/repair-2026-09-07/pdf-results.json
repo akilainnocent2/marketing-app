@@ -1,0 +1,20 @@
+{
+  "wide": {
+    "pages": 26,
+    "embedded_outfit": true,
+    "last_row_present": true,
+    "commission_90000": true
+  },
+  "portrait": {
+    "pages": 7,
+    "embedded_outfit": true,
+    "last_row_present": true,
+    "commission_90000": true
+  },
+  "empty": {
+    "pages": 1,
+    "embedded_outfit": true,
+    "last_row_present": true,
+    "commission_90000": true
+  }
+}

@@ -1,0 +1,10 @@
+Creating test database for alias 'default'...
+............................................
+----------------------------------------------------------------------
+Ran 44 tests in 5.112s
+
+OK
+Destroying test database for alias 'default'...
+Found 44 test(s).
+System check identified no issues (0 silenced).
+Roles, types, and default calendar-month period initialized. No commission rates assigned.

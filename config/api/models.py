@@ -114,7 +114,7 @@ class CommissionPeriod(models.Model):
 
 class CommissionPolicy(models.Model):
     marketer = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT)
-    period = models.ForeignKey(CommissionPeriod, on_delete=models.PROTECT)
+    period = models.ForeignKey(CommissionPeriod, on_delete=models.CASCADE)
     base = models.DecimalField(max_digits=18, decimal_places=2, validators=[MinValueValidator(0)])
     rate = models.DecimalField(max_digits=5, decimal_places=2, validators=[MinValueValidator(0),MaxValueValidator(100)])
     version = models.PositiveIntegerField(default=1)
@@ -125,7 +125,7 @@ class CommissionPolicy(models.Model):
 
 
 class PolicyRevision(models.Model):
-    policy = models.ForeignKey(CommissionPolicy, on_delete=models.PROTECT)
+    policy = models.ForeignKey(CommissionPolicy, null=True, blank=True, on_delete=models.SET_NULL)
     version = models.PositiveIntegerField()
     base = models.DecimalField(max_digits=18, decimal_places=2)
     rate = models.DecimalField(max_digits=5, decimal_places=2)

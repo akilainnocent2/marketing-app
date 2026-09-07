@@ -17,6 +17,8 @@ from django.shortcuts import render, redirect, get_object_or_404
 from django.urls import reverse
 from django.utils import timezone
 from django.views.decorators.http import require_POST, require_GET
+from django.views.decorators.vary import vary_on_headers
+from .reporting import report_context, organization, cohort
 from .models import *
 from .forms import SignupForm
 from .registry import REGISTRY,permission
@@ -79,10 +81,12 @@ def filtered(request,kind,qs):
                 try: value=date.fromisoformat(request.GET[key])
                 except ValueError: raise ValidationError('Use a valid date filter.')
                 qs=qs.filter(**{lookup:value})
-        if request.GET.get('marketer'):
-            if not request.user.has_perm('api.view_all_marketing') and request.GET['marketer'] != str(request.user.pk): raise PermissionDenied
-            try: qs=qs.filter(marketer_id=int(request.GET['marketer']))
+        if 'marketer' in request.GET:
+            raw=list(dict.fromkeys(x for x in request.GET.getlist('marketer') if x))
+            try: ids=[int(x) for x in raw]
             except ValueError: raise ValidationError('Invalid marketer.')
+            if not request.user.has_perm('api.view_all_marketing') and any(x!=request.user.pk for x in ids): raise PermissionDenied
+            if not (kind=='sales' and request.GET.get('selection')=='all'):qs=qs.filter(marketer_id__in=ids)
         if request.GET.get('status'):
             allowed=dict(model._meta.get_field('status').choices)
             if request.GET['status'] not in allowed: raise ValidationError('Invalid status.')
@@ -102,7 +106,9 @@ def filtered(request,kind,qs):
             frontier=list(locations(request.user).filter(parent_id__in=frontier).values_list('pk',flat=True));ids.extend(frontier)
         qs=qs.filter(location_id__in=ids)
     if kind=='sales' and request.GET.get('period'):
-        period=get_object_or_404(CommissionPeriod,pk=request.GET['period']);qs=qs.filter(date__range=(period.start,period.end))
+        try: period_id=int(request.GET['period'])
+        except ValueError: raise ValidationError('Invalid period.')
+        period=get_object_or_404(CommissionPeriod,pk=period_id);qs=qs.filter(date__range=(period.start,period.end))
     if kind=='expenditures':
         if request.GET.get('type'):
             types=ExpenditureType.objects.all()
@@ -123,7 +129,7 @@ def filtered(request,kind,qs):
         if request.GET.get('actor'):
             actor=get_object_or_404(get_user_model(),pk=request.GET['actor']);qs=qs.filter(actor=actor)
     sort=request.GET.get('sort','')
-    if sort and sort.lstrip('-') in fields: qs=qs.order_by(sort,'pk')
+    if sort and sort in fields+['-'+x for x in fields]: qs=qs.order_by(sort,'pk')
     elif not model._meta.ordering: qs=qs.order_by('-pk')
     return qs
 
@@ -138,11 +144,17 @@ def columns(request,kind):
 
 
 @login_required
+@vary_on_headers('HX-Request','HX-History-Restore-Request')
 def listing(request,kind):
     qs=dataset(request,kind)
     if getattr(request,'report_mode',False):
         require(request.user,'api.view_reports')
         if not request.user.has_perm('api.view_all_reports'):qs=qs.filter(marketer=request.user)
+    finance=None
+    if kind=='sales' and request.user.has_perm('api.view_reports'):
+        try: finance=report_context(request.user,request.GET)
+        except ValidationError as e: return HttpResponse(' '.join(e.messages),status=400)
+        qs=qs.filter(marketer_id__in=finance['selected_ids'])
     error=None
     try: qs=filtered(request,kind,qs)
     except ValidationError as e: error=' '.join(e.messages); qs=qs.none()
@@ -150,16 +162,25 @@ def listing(request,kind):
     if issubclass(model,OwnedRecord): qs=qs.select_related('marketer')
     page=Paginator(qs,15).get_page(request.GET.get('page'))
     params=request.GET.copy(); params.pop('page',None)
+    if finance and finance['period'] and not params.get('period'):params['period']=finance['period'].pk
     ctx={'title':title,'module':module,'kind':kind,'page':page,'columns':columns(request,kind),'all_columns':fields,'query':params.urlencode(),'error':error,'can_add':bool(form) and request.user.has_perm(permission(kind,'add')),'can_change':bool(form) and request.user.has_perm(permission(kind,'change')),'can_delete':kind in ['customers','sales','expenditures','users','groups','periods','commissions','expenditure-types'] and request.user.has_perm(permission(kind,'delete')),'amount_total':total(qs) if 'amount' in fields else None,'count':page.paginator.count}
+    ctx['finance_cards']=Paginator(finance['rows'],18).get_page(request.GET.get('card_page')) if finance else None
+    ctx['finance']=finance
+    ctx['region']='#list-content'
+    ctx['selected_marketers']=request.GET.getlist('marketer')
+    ctx['eligible_detail_total']=total(qs.filter(status='confirmed')) if kind=='sales' else None
     ctx['statuses']=model._meta.get_field('status').choices if issubclass(model,OwnedRecord) else []
     ctx['period_options']=CommissionPeriod.objects.all() if kind=='sales' else []
-    ctx['filter_users']=eligible_users(request.user)[:100] if request.user.has_perm('api.view_all_marketing') else []
-    return render(request,'api/partials/list_content.html' if request.headers.get('HX-Request') else 'api/list.html',ctx)
+    ctx['filter_users']=[] if finance else (cohort(request.user) if organization(request.user) else [])
+    return render(request,'api/partials/list_content.html' if fragment_request(request) else 'api/list.html',ctx)
 
 
 def form_response(request,context,status=200):
-    context['enhanced']=bool(request.headers.get('HX-Request'))
-    return render(request,'api/partials/form.html' if context['enhanced'] else 'api/form_page.html',context,status=status)
+    from django.utils.cache import patch_vary_headers
+    context['enhanced']=bool(fragment_request(request))
+    response=render(request,'api/partials/form.html' if context['enhanced'] else 'api/form_page.html',context,status=status)
+    patch_vary_headers(response,['HX-Request','HX-History-Restore-Request'])
+    return response
 
 
 @login_required
@@ -173,19 +194,38 @@ def edit(request,kind,pk=None):
     kwargs={'instance':obj}
     if kind in ['customers','sales','expenditures','commissions','users','groups']: kwargs['user']=request.user
     initial={}
+    if kind=='commissions' and not pk and request.method=='GET' and (request.GET.get('marketer') or request.GET.get('period')):
+        from .forms import ReportFilterForm
+        context=ReportFilterForm(request.GET,user=request.user)
+        if not context.is_valid() or len(context.cleaned_data['marketer'])!=1 or not context.cleaned_data['period']:
+            return HttpResponse('Select a valid marketer and period.',status=400)
+        marketer=context.cleaned_data['marketer'][0];period=context.cleaned_data['period']
+        existing=CommissionPolicy.objects.filter(marketer=marketer,period=period).first()
+        if existing:return edit(request,kind,existing.pk)
+        initial={'marketer':marketer,'period':period,'active':True}
+    if kind=='periods' and not pk:
+        today=timezone.localdate()
+        initial={'start':today.replace(day=1),'end':today.replace(day=calendar.monthrange(today.year,today.month)[1]),'name':today.strftime('%B %Y')}
     if kind=='customers' and not pk:
         profile,_=Profile.objects.get_or_create(user=request.user)
         initial={'reuse_location':profile.reuse_location,'location':profile.last_location if profile.reuse_location else None}
     form=formclass(request.POST if request.method=='POST' else None,request.FILES or None,initial=initial,**kwargs)
-    if request.method=='POST' and issubclass(model,OwnedRecord):
+    if request.method=='POST' and (issubclass(model,OwnedRecord) or kind in ['commissions','periods']):
         try:
             prior=Operation.objects.filter(token=uuid.UUID(request.POST.get('token','')),owner=request.user,kind=kind,result__isnull=False).first()
-            if prior: return saved_response(request,kind)
+            if prior: return saved_response(request,kind,model.objects.filter(pk=prior.result).first())
         except ValueError: pass
     if request.method=='POST' and form.is_valid():
         try:
             with transaction.atomic():
                 history={}
+                period_op=None
+                if kind=='periods' and form.cleaned_data.get('token'):
+                    period_op,created=Operation.objects.get_or_create(token=form.cleaned_data['token'],defaults={'owner':request.user,'kind':kind})
+                    if not created:
+                        if period_op.owner_id!=request.user.pk or period_op.kind!=kind:raise PermissionDenied
+                        if period_op.result:return saved_response(request,kind,model.objects.get(pk=period_op.result))
+                        raise ValidationError('This request is still processing.')
                 owned=issubclass(model,OwnedRecord)
                 if owned:
                     token=form.cleaned_data['token']
@@ -213,7 +253,23 @@ def edit(request,kind,pk=None):
                     instance.save(); op.result=instance.pk; op.save()
                     if kind=='customers':
                         Profile.objects.update_or_create(user=request.user,defaults={'reuse_location':form.cleaned_data['reuse_location'],'last_location':instance.location})
-                elif kind=='commissions': instance=save_policy(form.save(commit=False),request.user,form.cleaned_data['reason'])
+                elif kind=='commissions':
+                    token=form.cleaned_data['token']
+                    op,created=Operation.objects.get_or_create(token=token,defaults={'owner':request.user,'kind':kind})
+                    if not created:
+                        if op.owner_id!=request.user.pk or op.kind!=kind:raise PermissionDenied
+                        if op.result:return saved_response(request,kind)
+                        raise ValidationError('This request is still processing.')
+                    policy=form.save(commit=False)
+                    policy.version=form.cleaned_data.get('version') or 0
+                    if not pk:
+                        CommissionPeriod.objects.select_for_update().get(pk=policy.period_id)
+                        existing=CommissionPolicy.objects.filter(marketer=policy.marketer,period=policy.period).first()
+                        if existing:raise ValidationError('A policy now exists for this marketer. Close and reopen setup to review the current policy.')
+                        policy.version=1
+                    instance=save_policy(policy,request.user,form.cleaned_data['reason'])
+                    op.result=instance.pk;op.save()
+
                 else:
                     instance=form.save(commit=False)
                     if kind=='expenditure-types': instance.identity='shared:'+instance.name.strip().casefold()
@@ -223,20 +279,22 @@ def edit(request,kind,pk=None):
                         if not instance.identity:instance.identity=f'{instance.creator_id or 0}:{instance.parent_id or 0}:{instance.level}:{instance.normalized_name}'
                     if kind=='users' and form.cleaned_data.get('password'): instance.set_password(form.cleaned_data['password'])
                     instance.save(); form.save_m2m()
+                if period_op:
+                    period_op.result=instance.pk;period_op.save()
                 if owned:
                     history['after']={f:str(getattr(instance,f)) for f in ['date','status','version']+(['amount'] if hasattr(instance,'amount') else [])}
                     history['reason']=form.cleaned_data.get('correction_reason','')
                 audit(request.user,'updated' if pk else 'created',instance,history or {'fields':[x for x in form.changed_data if x in ['amount','status','base','rate','active','is_active','potential','date']]})
-            return saved_response(request,kind)
+            return saved_response(request,kind,instance)
         except (ValidationError,IntegrityError) as e:
             form.add_error(None,' '.join(e.messages) if isinstance(e,ValidationError) else 'A matching record already exists. Refresh and try again.')
-    return form_response(request,{'form':form,'title':('Edit ' if pk else 'Add ')+title.lower(),'kind':kind,'object':obj,'module':module,'action':'Save changes' if pk else 'Save '+title.lower(),'post_url':request.path,'draft_enabled':kind in ['customers','sales','expenditures'],'target_id':pk or ''},422 if request.method=='POST' else 200)
+    return form_response(request,{'form':form,'title':('Edit ' if pk else 'Add ')+title.lower(),'kind':kind,'object':obj,'module':module,'action':'Save changes' if pk else 'Save '+title.lower(),'post_url':reverse('api:edit',args=[kind,obj.pk]) if kind=='commissions' and obj.pk else request.path,'draft_enabled':kind in ['customers','sales','expenditures'],'target_id':pk or ''},422 if request.method=='POST' else 200)
 
 
-def saved_response(request,kind):
-    messages.success(request,'Changes saved successfully.')
+def saved_response(request,kind,instance=None):
     if request.headers.get('HX-Request'):
-        response=HttpResponse(status=204); response['HX-Trigger']=json.dumps({'recordSaved':{'another':bool(request.POST.get('another')),'url':reverse('api:add',args=[kind])}}); return response
+        response=HttpResponse(status=204); response['HX-Trigger']=json.dumps({'recordSaved':{'another':bool(request.POST.get('another')),'url':reverse('api:add',args=[kind]),'kind':kind,'id':instance.pk if instance else None,'marketers':[instance.marketer_id] if instance and hasattr(instance,'marketer_id') else [],'periods':[instance.period_id] if instance and hasattr(instance,'period_id') else [],'period':instance.pk if kind=='periods' and instance else None}}); return response
+    messages.success(request,'Changes saved successfully.')
     if request.POST.get('another'):return redirect('api:add',kind=kind)
     return redirect('api:list',kind=kind)
 
@@ -364,60 +422,62 @@ def reports(request):
     return report_view(request,True)
 
 
+def fragment_request(request):
+    return request.headers.get('HX-Request') and request.headers.get('HX-History-Restore-Request')!='true'
+
+@vary_on_headers('HX-Request','HX-History-Restore-Request')
 def report_view(request,is_report):
-    user=request.user
-    # Reports require both report and dataset permissions.
-    kinds=[k for k in ['customers','sales','expenditures'] if user.has_perm(permission(k))]
-    qs={k:scoped(REGISTRY[k][0],user) for k in kinds}
-    if not user.has_perm('api.view_all_reports'):
-        qs={k:q.filter(marketer=user) for k,q in qs.items()}
-    counts=qs['customers'].filter(status='finalized').count() if 'customers' in qs else None
-    sales=total(qs['sales'].filter(status='confirmed')) if 'sales' in qs else None
-    expenses=total(qs['expenditures'].filter(status='recorded')) if 'expenditures' in qs else None
-    periods=CommissionPeriod.objects.all()
-    period=get_object_or_404(periods,pk=request.GET['period']) if request.GET.get('period') else periods.filter(start__lte=timezone.localdate(),end__gte=timezone.localdate()).first()
-    users=get_user_model().objects.filter(is_active=True) if user.has_perm('api.view_all_reports') and user.has_perm('api.view_all_marketing') else get_user_model().objects.filter(pk=user.pk)
-    users=users.order_by('first_name','username')
-    cards=[]
-    if request.GET.get('marketer'):
-        if not user.has_perm('api.view_all_reports') and request.GET['marketer']!=str(user.pk):raise PermissionDenied
-        users=users.filter(pk=request.GET['marketer'])
-    if 'sales' in kinds and period:
-        from .services import commission_batch
-        cards=commission_batch(users,period)
-        customer_counts=dict(qs['customers'].filter(status='finalized').values('marketer_id').annotate(n=Count('pk')).values_list('marketer_id','n')) if 'customers' in qs else {}
-        expense_sums=dict(qs['expenditures'].filter(status='recorded',date__range=(period.start,period.end)).values('marketer_id').annotate(n=Sum('amount')).values_list('marketer_id','n')) if 'expenditures' in qs else {}
-        for c in cards:
-            c['customers']=customer_counts.get(c['marketer'].pk,0)
-            c['expense']=expense_sums.get(c['marketer'].pk,Decimal('0.00'))
-    earned=sum((c['commission'] for c in cards if c['configured']),Decimal('0.00')) if cards and all(c['configured'] for c in cards) else None
-    marketer_page=Paginator(cards,18).get_page(request.GET.get('page'))
-    cards=list(marketer_page)
-    chart=[]
-    for month in range(1,13):
-        value=total(qs['sales'].filter(status='confirmed',date__year=timezone.localdate().year,date__month=month)) if 'sales' in qs else Decimal(0)
-        chart.append({'month':calendar.month_abbr[month],'value':value})
+    if not request.user.has_perm('api.view_sale'):
+        metrics=[]
+        for kind,status in [('customers','finalized'),('expenditures','recorded')]:
+            if request.user.has_perm(permission(kind)):
+                records=scoped(REGISTRY[kind][0],request.user).filter(status=status)
+                if not request.user.has_perm('api.view_all_reports'):records=records.filter(marketer=request.user)
+                metrics.append({'kind':kind,'value':records.count() if kind=='customers' else total(records)})
+        ctx={'title':'Reports overview' if is_report else 'Dashboard','metrics':metrics,'dashboard_partial':'api/partials/non_sales_dashboard.html'}
+        return render(request,'api/partials/non_sales_dashboard.html' if fragment_request(request) else 'api/dashboard.html',ctx)
+    try: finance=report_context(request.user,request.GET)
+    except ValidationError as e: return HttpResponse(' '.join(e.messages),status=400)
+    period=finance['period']; ids=finance['selected_ids']
+    sales=Sale.objects.filter(marketer_id__in=ids)
+    if period:sales=sales.filter(date__range=(period.start,period.end))
+    from django.db.models.functions import TruncMonth
+    chart=list(sales.filter(status='confirmed').order_by().annotate(month=TruncMonth('date')).values('month').annotate(value=Sum('amount')).order_by('month'))
     maximum=max([x['value'] for x in chart]+[Decimal(1)])
-    for x in chart: x['height']=int(x['value']/maximum*100)
-    recent=qs['sales'].select_related('marketer','customer')[:5] if 'sales' in qs else []
-    return render(request,'api/dashboard.html',{'title':'Reports overview' if is_report else 'Dashboard','is_report':is_report,'customer_count':counts,'sales_total':sales,'expense_total':expenses,'earned':earned,'cards':cards,'period':period,'periods':periods,'chart':chart,'recent':recent,'year':timezone.localdate().year,'marketer_page':marketer_page,'sales_less_expense':sales-expenses if sales is not None and expenses is not None else None})
+    for x in chart:x['height']=int(x['value']/maximum*100)
+    page=Paginator(finance['rows'],18).get_page(request.GET.get('page'))
+    expenses=Expenditure.objects.filter(marketer_id__in=ids,status='recorded')
+    customers=Customer.objects.filter(marketer_id__in=ids,status='finalized')
+    if period:
+        expenses=expenses.filter(date__range=(period.start,period.end))
+        customers=customers.filter(date__range=(period.start,period.end))
+    ctx=dict(title='Reports overview' if is_report else 'Dashboard',is_report=is_report,finance=finance,
+             period=period,periods=CommissionPeriod.objects.all(),cards=page,marketer_page=page,
+             chart=chart,recent=sales.select_related('marketer','customer')[:5],region='#dashboard-content',
+             customer_count=customers.count() if request.user.has_perm('api.view_customer') else None,
+             expense_total=total(expenses) if request.user.has_perm('api.view_expenditure') else None)
+    return render(request,'api/partials/dashboard_content.html' if fragment_request(request) else 'api/dashboard.html',ctx)
 
 @login_required
+@vary_on_headers('HX-Request','HX-History-Restore-Request')
 def bulk(request):
     from .forms import BulkPolicyForm
     from django.core import signing
     require(request.user,'api.manage_commissions'); require(request.user,'api.add_commissionpolicy'); require(request.user,'api.change_commissionpolicy')
-    form=BulkPolicyForm(request.POST if request.method=='POST' else None,user=request.user)
+    form=BulkPolicyForm(request.POST if request.method=='POST' else None,user=request.user,initial={'period':request.GET.get('period'),'marketers':request.GET.getlist('marketers')})
     preview=None
     if request.method=='POST' and form.is_valid():
         d=form.cleaned_data
         prior=Operation.objects.filter(token=d['token'],owner=request.user,kind='bulk',result__isnull=False).first()
         if prior and request.POST.get('commit'):return saved_response(request,'commissions')
         fingerprint={'users':sorted(u.pk for u in d['marketers']),'period':d['period'].pk,'base':str(d['base']),'rate':str(d['rate']),'reason':d['reason'],'actor':request.user.pk,'token':str(d['token'])}
+        from .services import calculate_commission
+        amounts=dict(Sale.objects.filter(marketer__in=d['marketers'],status='confirmed',date__range=(d['period'].start,d['period'].end)).order_by().values('marketer_id').annotate(n=Sum('amount')).values_list('marketer_id','n'))
+        policies={p.marketer_id:p for p in CommissionPolicy.objects.filter(marketer__in=d['marketers'],period=d['period'])}
         preview=[]
         for user in d['marketers']:
-            old=CommissionPolicy.objects.filter(marketer=user,period=d['period']).first()
-            preview.append({'user':user,'base':old.base if old else None,'rate':old.rate if old else None,'version':old.version if old else 0})
+            old=policies.get(user.pk)
+            preview.append({'user':user,'base':old.base if old else None,'rate':old.rate if old else None,'version':old.version if old else 0,'before':calculate_commission(amounts.get(user.pk,Decimal(0)),old.base,old.rate) if old and old.active else None,'after':calculate_commission(amounts.get(user.pk,Decimal(0)),d['base'],d['rate'])})
         fingerprint['versions']=[p['version'] for p in preview]
         if request.POST.get('commit'):
             try:
@@ -428,6 +488,10 @@ def bulk(request):
                     if not created:
                         if op.owner_id!=request.user.pk or op.kind!='bulk': raise PermissionDenied
                         return saved_response(request,'commissions')
+                    period=CommissionPeriod.objects.select_for_update().get(pk=d['period'].pk)
+                    locked={p.marketer_id:p for p in CommissionPolicy.objects.select_for_update().filter(period=period,marketer__in=d['marketers'])}
+                    versions=[locked[u.pk].version if u.pk in locked else 0 for u in d['marketers']]
+                    if versions!=signed['versions']:raise ValidationError('Policies changed. Preview again before applying.')
                     for user in d['marketers']:
                         policy=CommissionPolicy.objects.select_for_update().filter(marketer=user,period=d['period']).first() or CommissionPolicy(marketer=user,period=d['period'])
                         policy.base=d['base'];policy.rate=d['rate'];policy.active=True
@@ -439,7 +503,7 @@ def bulk(request):
                 form.add_error(None,' '.join(e.messages) if isinstance(e,ValidationError) else 'Bulk assignment could not be applied. Preview again.');preview=None
         preview_token=signing.dumps(fingerprint,salt='bulk')
     else: preview_token=''
-    return render(request,'api/bulk.html',{'title':'Bulk commission assignment','module':'Settings','form':form,'preview':preview,'preview_token':preview_token,'action':'Preview changes'})
+    return render(request,'api/partials/bulk_form.html' if fragment_request(request) else 'api/bulk.html',{'enhanced':bool(fragment_request(request)),'title':'Bulk commission assignment','module':'Settings','form':form,'preview':preview,'preview_token':preview_token,'action':'Preview changes'})
 
 
 @login_required
@@ -449,11 +513,16 @@ def export(request,kind):
     if kind not in ['customers','sales','expenditures']: raise Http404
     qs=dataset(request,kind)
     if not request.user.has_perm('api.view_all_reports'): qs=qs.filter(marketer=request.user)
-    try: qs=filtered(request,kind,qs)
+    finance=None
+    try:
+        if kind=='sales':
+            finance=report_context(request.user,request.GET)
+            qs=qs.filter(marketer_id__in=finance['selected_ids'])
+        qs=filtered(request,kind,qs)
     except ValidationError as e: return HttpResponse(' '.join(e.messages),status=400)
     if qs.count()>5000: return HttpResponse('Narrow your filters to 5,000 rows or fewer.',status=422)
     cols=columns(request,kind)
-    result=build_pdf(request,kind,qs,cols)
+    result=build_pdf(request,kind,qs,cols,finance=finance)
     response=HttpResponse(result,content_type='application/pdf')
     response['Content-Disposition']=f'attachment; filename="marketflow-{kind}.pdf"'
     return response
@@ -479,6 +548,13 @@ def lookup(request,kind):
     if kind=='location':
         if not (request.user.has_perm('api.view_location') or request.user.has_perm('api.add_customer')):raise PermissionDenied
         qs=locations(request.user).filter(name__icontains=request.GET.get('q','')[:100])
+    elif kind=='report-marketer':
+        require(request.user,'api.view_reports');require(request.user,'api.view_sale')
+        from .forms import ReportFilterForm
+        form=ReportFilterForm(request.GET,user=request.user)
+        if not form.is_valid():return JsonResponse({'error':'Invalid report filters'},status=400)
+        q=request.GET.get('q','')[:100]
+        qs=form.cohort.filter(Q(username__icontains=q)|Q(first_name__icontains=q)|Q(last_name__icontains=q))
     elif kind=='marketer':
         require(request.user,'api.assign_marketer');require(request.user,'api.manage_all_marketing');qs=eligible_users(request.user)
         q=request.GET.get('q','')[:100];qs=qs.filter(Q(username__icontains=q)|Q(first_name__icontains=q)|Q(last_name__icontains=q))
@@ -543,9 +619,20 @@ def policy_preview(request):
     from .services import calculate_commission
     require(request.user,'api.manage_commissions')
     try:
+        if not (request.user.has_perm('api.add_commissionpolicy') or request.user.has_perm('api.change_commissionpolicy')):raise PermissionDenied
         values={k:Decimal(request.GET.get(k,'0')) for k in ['sales','base','rate']}
+        old=None
+        if request.GET.get('marketer') and request.GET.get('period'):
+            from .forms import ReportFilterForm
+            context=ReportFilterForm(request.GET,user=request.user)
+            if not context.is_valid() or len(context.cleaned_data['marketer'])!=1 or not context.cleaned_data['period']:raise ValueError
+            marketer=context.cleaned_data['marketer'][0];period=context.cleaned_data['period']
+            values['sales']=total(Sale.objects.filter(marketer=marketer,status='confirmed',date__range=(period.start,period.end)))
+            policy=CommissionPolicy.objects.filter(marketer=marketer,period=period).first()
+            if policy:old=calculate_commission(values['sales'],policy.base,policy.rate)
+
         if any(not x.is_finite() or x<0 for x in values.values()) or values['rate']>100:raise ValueError
-        return JsonResponse(calculate_commission(values['sales'],values['base'],values['rate']))
+        return JsonResponse({**calculate_commission(values['sales'],values['base'],values['rate']),'old':old})
     except (ValueError,InvalidOperation):return JsonResponse({'error':'Enter nonnegative sales/base and a rate from 0 to 100.'},status=422)
 
 
@@ -564,10 +651,9 @@ def remove_setting(request,kind,pk):
         from django.db.models.deletion import ProtectedError
         try:
             with transaction.atomic():
-                if kind=='commissions' and (obj.period.closed or Sale.objects.filter(marketer=obj.marketer,status='confirmed',date__range=(obj.period.start,obj.period.end)).exists()):raise ValidationError('Policies with counted sales or closed periods cannot be deleted. Use a policy correction.')
                 audit(request.user,'deleted',obj)
                 obj.delete()
             return saved_response(request,kind)
         except (ProtectedError,ValidationError) as e:
             return form_response(request,{'title':'Record retained','error':' '.join(e.messages) if isinstance(e,ValidationError) else 'This record is referenced by historical data. Deactivate it instead.'},422)
-    return form_response(request,{'title':'Delete '+str(obj),'confirmation':'Delete this record only if it has no protected history. Referenced records will be retained.','kind':kind,'action':'Delete','post_url':request.path})
+    return form_response(request,{'title':'Delete '+str(obj),'confirmation':('Delete this period and its commission policies? Sales and policy revisions will be retained; commission totals will be recalculated.' if kind=='periods' else 'Delete this commission policy? Sales and policy revisions will be retained; commission totals will be recalculated.' if kind=='commissions' else 'Delete this record only if it has no protected history. Referenced records will be retained.'),'kind':kind,'action':'Delete','post_url':request.path})

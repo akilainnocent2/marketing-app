@@ -49,3 +49,41 @@ def icon(name):
     if name not in {'grid','group','pie-chart','table','list','box','pencil','trash','eye','plus','download','chevron-down','chevron-left','arrow-right','time','user-circle','dollar-line','calender-line'}:return ''
     path=Path(__file__).resolve().parents[1]/'static/app/icons'/f'{name}.svg'
     return mark_safe(path.read_text()) if path.exists() else ''
+
+@register.simple_tag(takes_context=True)
+def query_update(context, **kwargs):
+    data=context['request'].GET.copy()
+    finance=context.get('finance')
+    if finance and finance['period'] and not data.get('period'):data['period']=finance['period'].pk
+    for key,value in kwargs.items():
+        data.pop(key,None)
+        if value is not None:data[key]=value
+    return data.urlencode()
+
+@register.simple_tag(takes_context=True)
+def report_hidden_filters(context):
+    from django.utils.html import format_html_join
+    return format_html_join('', '<input type="hidden" name="{}" value="{}">',
+        ((k,v) for k,values in context['request'].GET.lists() if k not in ['period','marketer','selection','page','card_page'] for v in values))
+
+@register.simple_tag
+def missing_policy_query(finance):
+    from urllib.parse import urlencode
+    return urlencode([('period',finance['period'].pk)]+[('marketers',r['marketer'].pk) for r in finance['selected']['issues']])
+
+@register.simple_tag(takes_context=True)
+def report_selection_fields(context):
+    from django.utils.html import format_html_join
+    return format_html_join('', '<input type="hidden" name="{}" value="{}">', ((key,v) for key in ['marketer','selection'] for v in context['request'].GET.getlist(key)))
+
+
+@register.inclusion_tag('api/partials/notification_items.html', takes_context=True)
+def configuration_notifications(context):
+    """Use the report scope when available, otherwise the current authorized scope."""
+    from django.http import QueryDict
+    from ..reporting import report_context
+    user = context['request'].user
+    finance = context.get('finance')
+    if finance is None and user.has_perm('api.view_reports') and user.has_perm('api.view_sale'):
+        finance = report_context(user, QueryDict(''))
+    return {'finance': finance, 'perms': context.get('perms')}

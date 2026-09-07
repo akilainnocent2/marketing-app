@@ -15,7 +15,7 @@ from .models import CommissionPeriod, Sale
 from .services import commission
 from .selectors import total
 
-def build_pdf(request,kind,qs,cols):
+def build_pdf(request,kind,qs,cols,finance=None):
     font=Path(settings.APP_ROOT)/'api/static/app/fonts/Outfit-Regular.ttf'
     face='Helvetica'
     if font.exists():
@@ -29,26 +29,40 @@ def build_pdf(request,kind,qs,cols):
     cellstyle=ParagraphStyle('cell',fontName=face,fontSize=9,leading=13,textColor=colors.HexColor('#344054'))
     p=lambda text:Paragraph(escape(str(text)),cellstyle)
     story=[Paragraph('MarketFlow',styles['Title']),Paragraph(REGISTRY[kind][2]+' report',styles['Heading2']),p('Generated '+timezone.localtime().strftime('%d %B %Y, %H:%M')+' · Africa/Dar_es_Salaam'),p('Prepared by '+(request.user.get_full_name() or request.user.username)),Spacer(1,12)]
-    safe={k:v for k,v in request.GET.items() if k in ['q','from','to','marketer','status','min','max','potential','sort','location','period','type','payment','receipt'] and v}
+    safe={k:v for k,values in request.GET.lists() for v in [', '.join(values)] if k in ['q','from','to','marketer','status','min','max','potential','sort','location','period','type','payment','receipt'] and v}
+    if finance:
+        if 'marketer' in safe:safe['marketer']=', '.join(str(r['marketer']) for r in finance['rows']) or 'Empty selection'
+        safe['period']=finance['basis']
     story += [p('Filters: '+('; '.join(f'{k}: {v}' for k,v in safe.items()) or 'All authorized records')),p(f'Records: {qs.count()}'),Spacer(1,12)]
     if kind in ['sales','expenditures']:
         status='confirmed' if kind=='sales' else 'recorded'
-        story += [p(f'{status.title()} detail total: TZS {total(qs.filter(status=status)):,.2f}'),Spacer(1,12)]
+        story += [p(f'Filtered detail subtotal: TZS {total(qs):,.2f}'),p(f'{status.title()} detail total: TZS {total(qs.filter(status=status)):,.2f}'),Spacer(1,12)]
     if kind=='sales':
         story += [Paragraph('Whole-period commission basis',styles['Heading3']),p('Detail filters do not restart the threshold. Each entitlement below uses every confirmed sale for that marketer within the saved period.'),Spacer(1,8)]
-        users=list(qs.values_list('marketer_id',flat=True).distinct())
-        periods=CommissionPeriod.objects.all()
-        if request.GET.get('period'):periods=periods.filter(pk=request.GET['period'])
-        if request.GET.get('from'): periods=periods.filter(end__gte=request.GET['from'])
-        if request.GET.get('to'): periods=periods.filter(start__lte=request.GET['to'])
+        if finance is None:
+            from .reporting import report_context
+            finance=report_context(request.user,request.GET)
+        story.append(p(finance['basis']))
+        summaries=[('Selected marketers',finance['selected'])]
+        if finance['show_global']:summaries.append(('All authorized marketers',finance['global_summary']))
+        for label,summary in summaries:
+            story.append(Paragraph(label,styles['Heading3']))
+            story.append(p(f"{summary['count']} marketers · Confirmed sales: TZS {summary['sales']:,.2f}"))
+            if finance['period']:
+                title='Earned commission' if summary['complete'] else 'Calculated commission subtotal'
+                story.append(p(f"Sales above bases: TZS {summary['excess']:,.2f} · {title}: TZS {summary['commission']:,.2f}"))
+                story.append(p(f"Assigned base thresholds: TZS {summary['base']:,.2f} · Sales covered by bases: TZS {summary['covered']:,.2f}"))
+                effective=f"{summary['effective_rate']:.2f}%" if summary['effective_rate'] is not None else 'Not applicable — no sales above base'
+                story.append(p('Configured rate: '+summary['rate_label']+' · '+ '; '.join(f"{r['rate']}%: {r['count']} marketers" for r in summary['rates'])))
+                story.append(p('Effective rate on sales above bases: '+effective+' · weighted configured outcome, not a new policy rate'))
+                if not summary['complete']:story.append(p(f"{summary['unconfigured_count']} marketers need commission configuration; complete total pending. TZS {summary['unconfigured_sales']:,.2f} confirmed sales awaiting configuration. Base, excess and commission describe the configured subset."))
         rows=[[p(x) for x in ['Marketer / period','Eligible sales','Base','Excess','Rate','Commission']]]
-        from django.contrib.auth import get_user_model
-        for user in get_user_model().objects.filter(pk__in=users):
-            for period in periods:
-                c=commission(user,period)
-                rows.append([p(f'{user} · {period.name} ({period.start} – {period.end})'),p(f"{c['sales']:,.2f}"),p(f"{c['base']:,.2f}" if c['configured'] else 'Not configured'),p(f"{c['excess']:,.2f}" if c['configured'] else '—'),p(f"{c['rate']}%" if c['configured'] else '—'),p(f"{c['commission']:,.2f}" if c['configured'] else '—')])
-        if len(rows)>1: story.append(styled_table(rows,doc.width,[.29,.15,.15,.15,.09,.17]))
-        else: story.append(p('No matching marketer-period commission data.'))
+        for c in finance['rows']:
+            rows.append([p(f"{c['marketer']} · {finance['basis']}"),p(f"{c['sales']:,.2f}"),p(f"{c['base']:,.2f}" if c['configured'] else c['state']),p(f"{c['excess']:,.2f}" if c['configured'] else '—'),p(f"{c['rate']}%" if c['configured'] else '—'),p(f"{c['commission']:,.2f}" if c['configured'] else '—')])
+            if c['configured']:
+                story.append(p(f"{c['marketer']}: ({c['sales']:,.2f} − {c['base']:,.2f}) × {c['rate']:g}% = {c['commission']:,.2f} TZS (excess clamped to zero)"))
+        if len(rows)>1:story.append(styled_table(rows,doc.width,[.29,.15,.15,.15,.09,.17]))
+        else:story.append(p('No marketers selected.'))
         story.append(Spacer(1,18))
     story.append(Paragraph('Detail records',styles['Heading3']))
     rows=[[p(c.replace('_',' ').title()) for c in cols]]
