@@ -1,0 +1,25 @@
+[Unit]
+Description=Marketing Django application
+After=network.target postgresql.service
+
+[Service]
+Type=simple
+DynamicUser=yes
+User=marketing
+WorkingDirectory=/opt/marketing
+EnvironmentFile=/etc/marketing/marketing.env
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/opt/marketing/.venv/bin/python -m gunicorn config.wsgi:application --bind 127.0.0.1:8117 --workers 3 --timeout 60 --access-logfile - --error-logfile -
+Restart=on-failure
+RestartSec=5
+StateDirectory=marketing
+StateDirectoryMode=0700
+ProtectSystem=strict
+ProtectHome=tmpfs
+BindReadOnlyPaths=/root/myapps/marketing-app:/opt/marketing
+PrivateTmp=yes
+NoNewPrivileges=yes
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

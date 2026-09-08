@@ -26,6 +26,7 @@ from .selectors import scoped,require,locations,eligible_users,total
 from .services import commission,audit,save_policy,financial_open
 
 class RateLimitedLogin(LoginView):
+    redirect_authenticated_user = True
     template_name='api/auth.html'
     extra_context={'title':'Sign in','subtitle':'Enter your username and password to sign in.','action':'Sign in'}
     def form_valid(self, form):

@@ -10,6 +10,7 @@ Commands below run **from this directory (`config/`)**, alongside `settings.py`.
 python -m venv .venv
 .venv/bin/pip install -r requirements.txt
 cp .env.example .env
+# Configure PostgreSQL credentials in .env before running migrations.
 .venv/bin/python ../manage.py migrate
 .venv/bin/python ../manage.py initialize
 .venv/bin/python ../manage.py import_locations
@@ -90,4 +91,4 @@ Secure session/CSRF cookies and HTTPS redirect turn on outside debug. Native `/a
 
 For SMTP, set `EMAIL_HOST`, credentials, port/TLS and `EMAIL_BACKEND=django.core.mail.backends.smtp.EmailBackend`. This enables Django's standard token-based password-reset controls. The console email backend is development-only. No email was sent during verification.
 
-SQLite is the verified local database. A PostgreSQL deployment requires installing a pinned psycopg driver, configuring `DATABASES`, and verifying concurrency/period-overlap constraints under PostgreSQL before go-live. This checkout does not claim PostgreSQL locking verification or high-concurrency production readiness. See the explicit remaining acceptance work in `docs/VERIFICATION.md`.
+PostgreSQL is the default database, named `marketing`, with connection settings configured through the variables in `.env.example`. The live service loads credentials from `/etc/marketing/marketing.env`. For isolated SQLite development, explicitly set `DB_ENGINE=sqlite3`. Verify concurrency/period-overlap constraints under PostgreSQL before high-concurrency use. This checkout does not claim PostgreSQL locking verification or high-concurrency production readiness. See the explicit remaining acceptance work in `docs/VERIFICATION.md`.

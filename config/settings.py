@@ -71,14 +71,6 @@ WSGI_APPLICATION = "config.wsgi.application"
 # Database
 # https://docs.djangoproject.com/en/5.0/ref/settings/#databases
 
-DATABASES = {
-    "default": {
-        "ENGINE": "django.db.backends.sqlite3",
-        "NAME": BASE_DIR / "db.sqlite3",
-    }
-}
-
-
 # Password validation
 # https://docs.djangoproject.com/en/5.0/ref/settings/#auth-password-validators
 
@@ -147,7 +139,23 @@ if CODESPACE_NAME:
     SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 INSTALLED_APPS += ['config.api.apps.ApiConfig', 'django.contrib.humanize']
 TIME_ZONE = 'Africa/Dar_es_Salaam'
-DATABASES['default']['NAME'] = os.getenv('SQLITE_PATH', str(APP_ROOT / 'db.sqlite3'))
+# PostgreSQL is the default for both management commands and the live app.
+# SQLite is available only when explicitly selected for isolated development.
+if os.getenv('DB_ENGINE', 'postgresql') == 'sqlite3':
+    DATABASES = {'default': {
+        'ENGINE': 'django.db.backends.sqlite3',
+        'NAME': os.getenv('SQLITE_PATH', str(APP_ROOT / 'db.sqlite3')),
+    }}
+else:
+    DATABASES = {'default': {
+        'ENGINE': 'django.db.backends.postgresql',
+        'NAME': os.getenv('POSTGRES_DB', 'marketing'),
+        'USER': os.getenv('POSTGRES_USER', 'marketing'),
+        'PASSWORD': os.getenv('MARKETING_DB_PASSWORD', ''),
+        'HOST': os.getenv('POSTGRES_HOST', '127.0.0.1'),
+        'PORT': os.getenv('POSTGRES_PORT', '5432'),
+        'CONN_MAX_AGE': 60,
+    }}
 STATIC_URL = '/static/'
 STATIC_ROOT = APP_ROOT / 'staticfiles'
 MEDIA_ROOT = APP_ROOT / 'private-media'
@@ -172,3 +180,10 @@ EMAIL_HOST_PASSWORD = os.getenv('EMAIL_HOST_PASSWORD', '')
 EMAIL_USE_TLS = os.getenv('EMAIL_USE_TLS', 'true').lower() == 'true'
 PASSWORD_RESET_ENABLED = bool(EMAIL_HOST)
 CACHES = {'default': {'BACKEND': 'django.core.cache.backends.filebased.FileBasedCache', 'LOCATION': APP_ROOT / '.cache'}}
+
+# Independent sessions; this dedicated key signs only the Shop → Marketing handoff.
+SHOP_APP_URL = os.getenv('SHOP_APP_URL', 'https://shop.britishschool.ac.tz').rstrip('/')
+MARKETING_APP_URL = os.getenv('MARKETING_APP_URL', 'https://marketing.britishschool.ac.tz').rstrip('/')
+SHOP_MARKETING_SSO_SECRET = os.getenv('BRITISHSCHOOL_SHOP_MARKETING_SSO_SECRET', '')
+SHOP_MARKETING_SSO_SALT = 'britishschool.shop-marketing.sso.v1'
+SHOP_MARKETING_SSO_MAX_AGE = 60
