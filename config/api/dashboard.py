@@ -4,6 +4,8 @@ from urllib.parse import urlencode
 
 from django.core.exceptions import ValidationError
 from django.urls import reverse
+from django.utils import timezone
+from django.utils.text import slugify
 
 from .models import Customer, Sale, Expenditure, CommissionPolicy, CommissionPeriod
 from .reporting import cohort, organization
@@ -121,3 +123,58 @@ def dashboard_context(scope):
     return dict(title='Dashboard', scope=scope, metrics=metrics, period=scope.period,
                 setup_url=setup_url, policy_url=policy_url,
                 dashboard_partial='api/partials/dashboard_content.html')
+
+
+DASHBOARD_EXPORT_LIMIT = 5000
+COMMISSION_EXPLANATION = 'Commission = max(Confirmed Sales − Base Amount, 0) × Rate'
+
+
+class DashboardExportTooLarge(Exception):
+    pass
+
+
+def get_dashboard_export(scope):
+    """Materialize one bounded, permission-aware payload for either renderer.
+
+    Scope and all KPI calculations remain owned by the dashboard helpers.
+    Unavailable model sections are explicitly identified, never treated as zero.
+    The extra row detects growth after COUNT without silently truncating output.
+    """
+    require(scope.user, 'api.export_reports')
+    require(scope.user, 'api.view_reports')
+    if not scope.period or not scope.marketer:
+        raise ValidationError('Configure a default commission period and select a permitted marketer before exporting.')
+    sections = []
+    specifications = [
+        ('Sales', 'sale', get_dashboard_sales, ('Reference', 'Customer', 'Amount', 'Date'),
+         lambda row: (row.reference, str(row.customer) if row.customer else '—', row.amount, row.date)),
+        ('Expenditure', 'expenditure', get_dashboard_expenditures,
+         ('Title', 'Type', 'Amount', 'Location', 'Date', 'Payment Method'),
+         lambda row: (row.title, str(row.expenditure_type), row.amount,
+                      str(row.location) if row.location else '—', row.date, row.payment_method or '—')),
+        ('Customers', 'customer', get_dashboard_customers, ('Customer Name', 'Phone', 'Location', 'Date'),
+         lambda row: (row.name, row.phone, str(row.location) if row.location else '—', row.date)),
+    ]
+    queries = [(spec, spec[2](scope) if scope.user.has_perm('api.view_' + spec[1]) else None)
+               for spec in specifications]
+    message = 'This dashboard exceeds 5,000 detail records. Select a narrower permitted location where applicable, or ask an administrator for help. No partial report was generated.'
+    if sum(qs.count() for _, qs in queries if qs is not None) > DASHBOARD_EXPORT_LIMIT:
+        raise DashboardExportTooLarge(message)
+    remaining = DASHBOARD_EXPORT_LIMIT
+    for (title, model, helper, headers, values), qs in queries:
+        rows = [values(row) for row in qs[:remaining + 1]] if qs is not None else []
+        remaining -= len(rows)
+        if remaining < 0:
+            raise DashboardExportTooLarge(message)
+        sections.append(dict(title=title, headers=headers, rows=rows, available=qs is not None))
+    return dict(scope=scope, metrics=get_dashboard_metrics(scope), sections=sections,
+                marketer=scope.marketer.get_full_name() or scope.marketer.username,
+                location=str(scope.location) if scope.location else 'All permitted locations',
+                prepared_by=scope.user.get_full_name() or scope.user.username,
+                generated_at=timezone.localtime(), explanation=COMMISSION_EXPLANATION)
+
+
+def dashboard_export_filename(scope, extension):
+    marketer = slugify(scope.marketer.get_full_name() or scope.marketer.username)[:70] or 'marketer'
+    period = slugify(scope.period.name)[:70] or 'period'
+    return f'marketflow-dashboard-{marketer}-{period}.{extension}'

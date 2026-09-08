@@ -13,4 +13,7 @@
 {% if perms.api.view_customer %}
 <a class="card dashboard-metric" data-modal href="{% url 'api:dashboard-detail' 'customers' %}?{{ scope.query }}" aria-label="View Total Customers details"><span class="dashboard-metric-title">Total Customers <span aria-hidden="true">↗</span></span><strong>{{ metrics.customers }}</strong><small>Finalized · {{ period.name }}{% if scope.location %} · {{ scope.location }}{% endif %}</small><span class="dashboard-view">View details →</span></a>
 {% endif %}
+{% if perms.api.export_reports %}
+<a class="card dashboard-metric dashboard-export-card" data-modal href="{% url 'api:dashboard-export' %}?{{ scope.query }}" aria-label="Export Report: choose PDF or Excel"><span class="dashboard-metric-title">Export Report <span aria-hidden="true">↗</span></span><span class="dashboard-export-icon" aria-hidden="true">{% icon 'download' %}</span><small>Download this dashboard summary</small><span class="dashboard-view">Choose format →</span></a>
+{% endif %}
 </div>

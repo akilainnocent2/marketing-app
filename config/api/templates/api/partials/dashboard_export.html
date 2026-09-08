@@ -1,0 +1,23 @@
+{% load ui %}
+<div class="modal-inner dashboard-export">
+<h2 id="dialog-title">Export dashboard</h2>
+{% if period and scope.marketer %}
+<div class="dashboard-export-scope">
+<strong>{{ scope.marketer.get_full_name|default:scope.marketer.username }}</strong>
+<span>{{ period.name }}</span>
+<span>{{ period.start|date:'d M Y' }} – {{ period.end|date:'d M Y' }}</span>
+<span>Location: {% if scope.location %}{{ scope.location }}{% else %}All permitted locations{% endif %}</span>
+</div>
+<h3>Choose a format</h3>
+<div class="dashboard-export-options">
+<a class="dashboard-format" href="{% url 'api:dashboard-export-pdf' %}?{{ scope.query }}" aria-label="Get PDF dashboard report">
+<span class="dashboard-export-icon" aria-hidden="true">{% icon 'download' %}<small>PDF</small></span>
+<strong>PDF Report</strong><span>Best for printing and sharing</span><span class="dashboard-view">Get PDF →</span>
+</a>
+<a class="dashboard-format" href="{% url 'api:dashboard-export-excel' %}?{{ scope.query }}" aria-label="Get Excel dashboard workbook">
+<span class="dashboard-export-icon" aria-hidden="true">{% icon 'table' %}<small>XLSX</small></span>
+<strong>Excel Workbook</strong><span>Best for analysis and editing</span><span class="dashboard-view">Get Excel →</span>
+</a>
+</div>
+{% else %}<p>Configure a default commission period and select a permitted marketer before exporting.</p>{% endif %}
+</div>
