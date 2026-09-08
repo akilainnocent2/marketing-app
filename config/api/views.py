@@ -695,3 +695,38 @@ def dashboard_detail(request, metric):
         ctx['page'] = Paginator(queries[metric](scope), 20).get_page(request.GET.get('page'))
     ctx.update(title=titles[metric], metric=metric)
     return render(request, 'api/partials/dashboard_detail.html' if fragment_request(request) else 'api/dashboard_detail.html', ctx)
+
+
+@login_required
+@require_GET
+@vary_on_headers('HX-Request', 'HX-History-Restore-Request')
+def dashboard_export(request, format=None):
+    from .dashboard import (get_dashboard_scope, get_dashboard_export,
+                            dashboard_export_filename, DashboardExportTooLarge)
+    require(request.user, 'api.view_reports')
+    require(request.user, 'api.export_reports')
+    try:
+        scope = get_dashboard_scope(request.user, request.GET)
+        if format is None:
+            context = dict(title='Export dashboard', scope=scope, period=scope.period)
+            return render(request, 'api/partials/dashboard_export.html' if fragment_request(request)
+                          else 'api/dashboard_export.html', context)
+        report = get_dashboard_export(scope)
+    except ValidationError as exc:
+        return HttpResponse(' '.join(exc.messages), status=400, content_type='text/plain')
+    except DashboardExportTooLarge as exc:
+        return HttpResponse(str(exc), status=422, content_type='text/plain')
+    if format == 'pdf':
+        from .pdf import build_dashboard_pdf
+        content = build_dashboard_pdf(report)
+        mime, extension = 'application/pdf', 'pdf'
+    elif format == 'excel':
+        from .excel import build_dashboard_excel
+        content = build_dashboard_excel(report)
+        mime, extension = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'xlsx'
+    else:
+        raise Http404
+    response = HttpResponse(content, content_type=mime)
+    response['Content-Disposition'] = f'attachment; filename="{dashboard_export_filename(scope, extension)}"'
+    response['Cache-Control'] = 'private, no-store'
+    return response

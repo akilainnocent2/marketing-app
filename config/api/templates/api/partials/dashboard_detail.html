@@ -16,15 +16,16 @@
 {% else %}
 {% if scope.location and metric != 'sales' %}<p>{{ scope.location }} and its permitted descendants</p>{% endif %}
 <p class="dashboard-detail-total">{% if metric == 'sales' %}Total: TZS {{ metrics.sales|money }}{% elif metric == 'expenditure' %}Total: TZS {{ metrics.expenditure|money }}{% else %}{{ metrics.customers }} customer{{ metrics.customers|pluralize }}{% endif %}</p>
+<p class="dashboard-scroll-hint">Swipe or scroll sideways to see all columns.</p>
 <div class="table-scroll" tabindex="0" aria-label="{{ title }} records"><table><thead><tr>
-{% if metric == 'sales' %}<th>Reference</th><th>Customer</th><th>Amount</th><th>Date</th>
-{% elif metric == 'expenditure' %}<th>Title</th><th>Type</th><th>Amount</th><th>Location</th><th>Vendor</th><th>Date</th><th>Payment method</th>
+{% if metric == 'sales' %}<th>Reference</th><th>Customer</th><th class="dashboard-money">Amount</th><th>Date</th>
+{% elif metric == 'expenditure' %}<th>Title</th><th>Type</th><th class="dashboard-money">Amount</th><th>Location</th><th>Date</th><th>Payment method</th>
 {% else %}<th>Customer name</th><th>Phone</th><th>Location</th><th>Date</th>{% endif %}
 </tr></thead><tbody>{% for row in page %}<tr>
-{% if metric == 'sales' %}<td>{{ row.reference }}</td><td>{{ row.customer|default:'—' }}</td><td>TZS {{ row.amount|money }}</td><td>{{ row.date|date:'d M Y' }}</td>
-{% elif metric == 'expenditure' %}<td>{{ row.title }}</td><td>{{ row.expenditure_type }}</td><td>TZS {{ row.amount|money }}</td><td>{{ row.location|default:'—' }}</td><td>{{ row.vendor|default:'—' }}</td><td>{{ row.date|date:'d M Y' }}</td><td>{{ row.payment_method|default:'—' }}</td>
+{% if metric == 'sales' %}<td>{{ row.reference }}</td><td>{{ row.customer|default:'—' }}</td><td class="dashboard-money">TZS {{ row.amount|money }}</td><td>{{ row.date|date:'d M Y' }}</td>
+{% elif metric == 'expenditure' %}<td>{{ row.title }}</td><td>{{ row.expenditure_type }}</td><td class="dashboard-money">TZS {{ row.amount|money }}</td><td>{{ row.location|default:'—' }}</td><td>{{ row.date|date:'d M Y' }}</td><td>{{ row.payment_method|default:'—' }}</td>
 {% else %}<td>{{ row.name }}</td><td>{{ row.phone }}</td><td>{{ row.location|default:'—' }}</td><td>{{ row.date|date:'d M Y' }}</td>{% endif %}
-</tr>{% empty %}<tr><td colspan="7"><div class="empty-state">No {{ title|lower }} in this scope.</div></td></tr>{% endfor %}</tbody></table></div>
+</tr>{% empty %}<tr><td colspan="{% if metric == 'expenditure' %}6{% else %}4{% endif %}"><div class="empty-state">No {{ title|lower }} in this scope.</div></td></tr>{% endfor %}</tbody></table></div>
 {% if page.has_other_pages %}<nav class="pagination" aria-label="{{ title }} pages">{% if page.has_previous %}<a class="button secondary" data-modal href="{% url 'api:dashboard-detail' metric %}?{{ scope.query }}&amp;page={{ page.previous_page_number }}">← Previous</a>{% endif %}<span>Page {{ page.number }} of {{ page.paginator.num_pages }} · {{ page.paginator.count }} records</span>{% if page.has_next %}<a class="button secondary" data-modal href="{% url 'api:dashboard-detail' metric %}?{{ scope.query }}&amp;page={{ page.next_page_number }}">Next →</a>{% endif %}</nav>{% endif %}
 {% endif %}
 </div>

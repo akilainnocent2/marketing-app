@@ -3,6 +3,9 @@ from django.contrib.auth import views as auth
 from . import views, shop_sso
 app_name='api'
 urlpatterns=[
+ path('dashboard/export/',views.dashboard_export,name='dashboard-export'),
+ path('dashboard/export/pdf/',views.dashboard_export,{'format':'pdf'},name='dashboard-export-pdf'),
+ path('dashboard/export/excel/',views.dashboard_export,{'format':'excel'},name='dashboard-export-excel'),
  path('dashboard/details/<str:metric>/',views.dashboard_detail,name='dashboard-detail'),
  path('accounts/sso/shop/start/',shop_sso.shop_sso_start,name='shop_sso_start'),
  path('accounts/sso/shop/consume/',shop_sso.shop_sso_consume,name='shop_sso_consume'),

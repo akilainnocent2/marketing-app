@@ -233,7 +233,7 @@ class DashboardTests(TestCase):
                 if 'dashboard-metric' in attrs.get('class','').split():self.cards.append((tag,attrs))
         elements=Elements();elements.feed(html)
         self.assertEqual([s['name'] for s in elements.selects],['marketer','location'])
-        self.assertEqual(len(elements.cards),5)
+        self.assertEqual(len(elements.cards),6)
         for tag,attrs in elements.cards:
             self.assertEqual(tag,'a');self.assertIn('href',attrs);self.assertIn('aria-label',attrs);self.assertIn('data-modal',attrs)
         for text in ['finance-region','data-period','effective rate','Marketer performance','All permitted marketers','multiple']:
@@ -268,6 +268,241 @@ class DashboardTests(TestCase):
         self.assertEqual([row['id'] for row in result['results']],[self.b.pk])
         self.dashboard()
         self.assertEqual(self.client.get('/lookups/dashboard-marketer/',{'q':'Bob'}).json()['results'],[])
+
+    def allow_export(self, user=None):
+        user = user or self.a
+        user.user_permissions.add(Permission.objects.get(content_type__app_label='api', codename='export_reports'))
+        self.client.force_login(user)
+
+    def export_response(self, format, **params):
+        return self.client.get(reverse('api:dashboard-export-' + format), params)
+
+    def pdf_text(self, response):
+        from io import BytesIO
+        from pypdf import PdfReader
+        self.assertEqual(response.status_code, 200, response.content[:500])
+        self.assertEqual(response['Content-Type'], 'application/pdf')
+        self.assertTrue(response.content.startswith(b'%PDF-'))
+        reader = PdfReader(BytesIO(response.content))
+        return '\n'.join(page.extract_text() for page in reader.pages)
+
+    def workbook(self, response):
+        from io import BytesIO
+        from openpyxl import load_workbook
+        self.assertEqual(response.status_code, 200, response.content[:500])
+        self.assertEqual(response['Content-Type'], 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+        book = load_workbook(BytesIO(response.content))
+        self.assertEqual(book.sheetnames, ['Overview', 'Sales', 'Expenditure', 'Customers'])
+        return book
+
+    def test_dashboard_vendor_absent_but_record_and_crud_preserved(self):
+        record = self.expense(location=self.child)
+        record.vendor = 'Unique private vendor'
+        record.payment_method = 'Mobile Money'
+        record.save()
+        original = Expenditure.objects.filter(pk=record.pk).values().get()
+        self.client.force_login(self.admin)
+        response = self.details('expenditure', marketer=self.a.pk)
+        for text in ['Title', 'Type', 'Amount', 'Location', 'Date', 'Payment method', 'Travel cost', 'Mobile Money']:
+            self.assertContains(response, text)
+        self.assertNotContains(response, 'Vendor')
+        self.assertNotContains(response, record.vendor)
+        self.assertEqual(response.context['page'].paginator.count, 1)
+        self.assertEqual(Expenditure.objects.filter(pk=record.pk).values().get(), original)
+        detail = self.client.get(reverse('api:detail', args=['expenditures', record.pk]))
+        self.assertContains(detail, record.vendor)
+        edit = self.client.get(reverse('api:edit', args=['expenditures', record.pk]))
+        self.assertContains(edit, 'name="vendor"')
+        self.assertContains(edit, record.vendor)
+        self.assertContains(self.details('expenditure', marketer=self.b.pk), 'colspan="6"')
+        self.assertContains(self.details('sales', marketer=self.b.pk), 'colspan="4"')
+
+    def test_export_card_permission_and_all_endpoint_guards(self):
+        self.assertNotContains(self.dashboard(), 'Export Report')
+        routes = ['dashboard-export', 'dashboard-export-pdf', 'dashboard-export-excel']
+        for route in routes:
+            self.assertEqual(self.client.get(reverse('api:' + route)).status_code, 403)
+        self.allow_export()
+        self.assertContains(self.client.get('/dashboard/'), 'Export Report')
+        self.a.groups.clear()
+        for route in routes:
+            self.assertEqual(self.client.get(reverse('api:' + route)).status_code, 403)
+        self.client.logout()
+        for route in routes:
+            self.assertEqual(self.client.get(reverse('api:' + route)).status_code, 302)
+            self.assertEqual(self.client.get(reverse('api:' + route), HTTP_HX_REQUEST='true').status_code, 401)
+
+    def test_export_chooser_validated_scope_and_full_page_fallback(self):
+        self.client.force_login(self.admin)
+        params = dict(marketer=self.a.pk, location=self.child.pk, period=self.other.pk)
+        url = reverse('api:dashboard-export')
+        fragment = self.client.get(url, params, HTTP_HX_REQUEST='true')
+        self.assertEqual(fragment.context['scope'].marketer, self.a)
+        self.assertEqual(fragment.context['scope'].location, self.child)
+        for text in ['Get PDF', 'Get Excel', 'Alice', 'September 2026', '01 Sep 2026', '30 Sep 2026', 'Location: Kinondoni']:
+            self.assertContains(fragment, text)
+        for text in ['<!doctype', '<select', 'period=', 'August 2026', 'data-modal']:
+            self.assertNotContains(fragment, text)
+        for format in ['pdf', 'excel']:
+            self.assertContains(fragment, reverse('api:dashboard-export-' + format) + f'?marketer={self.a.pk}&amp;location={self.child.pk}')
+        self.assertContains(self.client.get(url, params), '<!doctype html>')
+        self.assertContains(self.client.get(url, params, HTTP_HX_REQUEST='true', HTTP_HX_HISTORY_RESTORE_REQUEST='true'), '<!doctype html>')
+        self.assertContains(self.client.get(url), 'Location: All permitted locations')
+
+    def test_export_scope_security_and_method(self):
+        self.allow_export()
+        for route in ['dashboard-export', 'dashboard-export-pdf', 'dashboard-export-excel']:
+            url = reverse('api:' + route)
+            for params in [dict(marketer=self.b.pk), dict(marketer='bad'), dict(marketer=[self.a.pk, self.b.pk]),
+                           dict(location=self.private.pk), dict(location='bad'), dict(location=[self.child.pk, self.root.pk])]:
+                self.assertEqual(self.client.get(url, params).status_code, 400)
+            self.assertEqual(self.client.post(url).status_code, 405)
+
+    def test_exports_exact_dashboard_numbers_period_and_location(self):
+        self.allow_export()
+        customer = self.customer(location=self.child)
+        self.customer(); self.customer('archived', location=self.child)
+        self.customer(user=self.b, location=self.child)
+        self.sale(customer=customer)
+        self.sale(9000000, 'draft'); self.sale(9000000, 'void'); self.sale(9000000, user=self.b)
+        old = self.sale(42); old.date = self.other.start; old.save()
+        params = dict(marketer=self.a.pk, location=self.root.pk, period=self.other.pk)
+        before = self.workbook(self.export_response('excel', **params))
+        self.assertEqual(before['Overview']['D19'].value, 120000)
+        record = self.expense(location=self.child)
+        record.vendor = 'Export secret vendor'; record.payment_method = 'Cash'; record.save()
+        self.expense(12); self.expense(55, 'void', location=self.child); self.expense(44, user=self.b, location=self.child)
+        pdf = self.export_response('pdf', **params)
+        text = self.pdf_text(pdf)
+        for value in ['MarketFlow', 'Dashboard Performance Report', 'Alice', 'September 2026', '01 Sep 2026',
+                      '30 Sep 2026', '7,000,000.00', '850,000.00', '3,000,000.00', '4,000,000.00',
+                      '3.00%', '120,000.00', '1 customer', 'Travel cost', 'Kinondoni', 'Cash', 'Page 1']:
+            self.assertIn(value, text)
+        for value in ['Vendor', record.vendor, 'August 2026', str(old.reference)]:
+            self.assertNotIn(value, text)
+        self.assertEqual(pdf['Content-Disposition'], 'attachment; filename="marketflow-dashboard-alice-september-2026.pdf"')
+        excel = self.export_response('excel', **params)
+        self.assertEqual(excel['Content-Disposition'], 'attachment; filename="marketflow-dashboard-alice-september-2026.xlsx"')
+        book = self.workbook(excel)
+        overview = book['Overview']
+        self.assertEqual([overview[f'D{r}'].value for r in range(14, 21)], [7000000, 850000, 3000000, 4000000, .03, 120000, 1])
+        self.assertEqual(overview['B4'].value, 'Alice')
+        self.assertEqual(overview['B5'].value, 'September 2026')
+        self.assertEqual(overview['B6'].value.date(), self.period.start)
+        self.assertEqual(overview['B7'].value.date(), self.period.end)
+        self.assertEqual(overview['B8'].value, 'Dar es Salaam')
+        self.assertEqual(overview['B10'].value, 'Alice')
+        expense = book['Expenditure']
+        self.assertEqual(list(expense.values)[0], ('Title', 'Type', 'Amount', 'Location', 'Date', 'Payment Method'))
+        self.assertEqual(expense.max_row, 2)
+        self.assertEqual(expense['C2'].value, 850000)
+        self.assertEqual(expense['C2'].data_type, 'n')
+        self.assertIn('TZS', expense['C2'].number_format)
+        self.assertEqual(expense['E2'].value.date(), record.date)
+        self.assertEqual(book['Sales'].max_row, 2)
+        self.assertEqual(book['Customers'].max_row, 2)
+        self.assertEqual(book['Customers']['B2'].value, customer.phone)
+        self.assertEqual(book['Customers']['B2'].data_type, 's')
+        for sheet in list(book)[1:]:
+            self.assertEqual(sheet.freeze_panes, 'A2')
+            self.assertTrue(sheet.auto_filter.ref)
+            self.assertEqual(sheet.print_title_rows, '$1:$1')
+        record.refresh_from_db()
+        self.assertEqual(record.vendor, 'Export secret vendor')
+
+    def test_exports_missing_policy_and_default_do_not_imply_zero(self):
+        self.allow_export()
+        self.policy.active = False; self.policy.save()
+        self.assertIn('Commission policy not configured', self.pdf_text(self.export_response('pdf')))
+        book = self.workbook(self.export_response('excel'))
+        for row in [16, 17, 18, 19]:
+            self.assertEqual(book['Overview'][f'D{row}'].value, 'Commission policy not configured')
+        CommissionPeriod.objects.update(is_default=False)
+        for format in ['pdf', 'excel']:
+            self.assertContains(self.export_response(format), 'Configure a default commission period', status_code=400)
+
+    def test_export_location_never_reduces_sales_entitlement(self):
+        self.allow_export()
+        inside = self.customer(location=self.child)
+        outside = self.customer()
+        self.sale(2000000, customer=inside)
+        self.sale(5000000, customer=outside)
+        self.expense(850000, location=self.child)
+        self.expense(9000000)
+        book = self.workbook(self.export_response('excel', location=self.root.pk))
+        self.assertEqual(book['Sales'].max_row, 3)
+        self.assertEqual(book['Customers'].max_row, 2)
+        self.assertEqual(book['Expenditure'].max_row, 2)
+        self.assertEqual([book['Overview'][f'D{r}'].value for r in [14, 15, 17, 19]],
+                         [7000000, 850000, 4000000, 120000])
+        text = self.pdf_text(self.export_response('pdf', location=self.root.pk))
+        for amount in ['7,000,000.00', '2,000,000.00', '5,000,000.00', '4,000,000.00', '120,000.00', '850,000.00']:
+            self.assertIn(amount, text)
+        self.assertNotIn('9,000,000.00', text)
+
+    def test_exports_respect_individual_model_permissions(self):
+        reader = get_user_model().objects.create_user('export-reader')
+        reader.user_permissions.set(Permission.objects.filter(content_type__app_label='api',
+            codename__in=['view_reports', 'export_reports', 'view_customer']))
+        self.customer(user=reader)
+        self.sale(user=reader)
+        self.client.force_login(reader)
+        text = self.pdf_text(self.export_response('pdf'))
+        self.assertIn('Not permitted', text)
+        self.assertNotIn('7,000,000.00', text)
+        book = self.workbook(self.export_response('excel'))
+        self.assertEqual(book['Sales']['A2'].value, 'Not permitted')
+        self.assertEqual(book['Overview']['D14'].value, 'Not permitted')
+        self.assertEqual(book['Customers']['A2'].value, 'Customer')
+
+    def test_export_limit_combines_sections_and_never_renders_partial_files(self):
+        self.allow_export()
+        self.sale(); self.expense(); self.customer()
+        with patch('config.api.dashboard.DASHBOARD_EXPORT_LIMIT', 2), \
+             patch('config.api.pdf.build_dashboard_pdf') as pdf, patch('config.api.excel.build_dashboard_excel') as excel:
+            for format in ['pdf', 'excel']:
+                self.assertContains(self.export_response(format), 'No partial report was generated', status_code=422)
+            pdf.assert_not_called(); excel.assert_not_called()
+        with patch('config.api.dashboard.DASHBOARD_EXPORT_LIMIT', 3):
+            self.workbook(self.export_response('excel'))
+
+    def test_export_text_is_literal_and_filename_is_safe(self):
+        self.allow_export()
+        self.a.first_name = '=HYPERLINK("https://example.com") / Alice'; self.a.save()
+        customer = self.customer()
+        customer.name = '=1+1'; customer.save()
+        self.sale(customer=customer)
+        record = self.expense(); record.title = '@SUM(1,1)'; record.save()
+        response = self.export_response('excel')
+        book = self.workbook(response)
+        for cell in [book['Overview']['B4'], book['Customers']['A2'], book['Sales']['B2'], book['Expenditure']['A2']]:
+            self.assertEqual(cell.data_type, 's')
+        self.assertNotIn('/', response['Content-Disposition'])
+        self.assertNotIn('=', response['Content-Disposition'].split('filename=')[1])
+
+    def test_export_rows_not_paginated_and_queries_not_per_record(self):
+        from .dashboard import get_dashboard_export
+        self.allow_export()
+        self.sale(); self.expense(location=self.child); self.customer(location=self.child)
+        scope = get_dashboard_scope(self.a, QueryDict(''))
+        self.a.get_all_permissions()
+        with CaptureQueriesContext(connection) as queries:
+            get_dashboard_export(scope)
+        initial = len(queries)
+        for _ in range(25):
+            c = self.customer(location=self.child); self.sale(customer=c); self.expense(location=self.child)
+        with CaptureQueriesContext(connection) as queries:
+            payload = get_dashboard_export(scope)
+        self.assertLessEqual(len(queries), initial)
+        self.assertEqual([len(s['rows']) for s in payload['sections']], [26, 26, 26])
+        book = self.workbook(self.export_response('excel'))
+        for sheet in list(book)[1:]:
+            self.assertEqual(sheet.max_row, 27)
+        text = self.pdf_text(self.export_response('pdf'))
+        self.assertIn('26 sales', text)
+        self.assertIn('26 expenditure records', text)
+        self.assertIn('26 customers', text)
+        self.assertIn('Page 2', text)
 
 
 class DefaultPeriodMigrationTests(TransactionTestCase):

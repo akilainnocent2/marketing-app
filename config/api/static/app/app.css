@@ -133,7 +133,46 @@ dialog .form-grid{max-height:calc(100dvh - 325px);overflow-y:auto;padding:4px;ma
 .dashboard-drilldown>p{margin-top:10px}.dashboard-detail-total{padding:18px 0;font-size:20px;font-weight:600;color:var(--text)}
 .dashboard-calculation{margin:24px 0}.dashboard-calculation>div{display:flex;justify-content:space-between;gap:20px;padding:14px 0}.dashboard-calculation dd{margin:0;text-align:right;font-variant-numeric:tabular-nums}.calculation-total{border-top:1px solid var(--border);font-weight:600}
 .modal-close{width:44px;height:44px;z-index:2}.dashboard-drilldown .table-scroll{max-width:100%}
-@media(min-width:1700px){.dashboard-metrics{grid-template-columns:repeat(5,minmax(0,1fr))}}
+
 @media(max-width:1100px){.dashboard-metrics{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(max-width:600px){.dashboard-metrics,.dashboard-filters{grid-template-columns:1fr}.dashboard-filters{padding:20px;gap:16px}.dashboard-metric{min-height:200px}.dashboard-calculation>div{flex-wrap:wrap;gap:8px}.dashboard-drilldown .pagination{gap:12px}}
 @media(prefers-reduced-motion:reduce){.dashboard-metric{transition:none}.dashboard-metric:hover{transform:none}}
+
+/* Dashboard-only export cards and sheets; other dialogs retain their layout. */
+.dashboard-export-icon{display:flex;align-items:center;justify-content:center;gap:8px;width:fit-content;min-width:48px;min-height:48px;padding:10px;border-radius:12px;background:var(--pale);color:var(--primary)}
+.dashboard-export-icon small{font-size:11px;font-weight:600;color:inherit}
+.dashboard-export-scope{display:flex;flex-direction:column;gap:6px;margin:22px 0;padding:18px;background:var(--soft);border:1px solid var(--border);border-radius:12px;color:var(--muted);overflow-wrap:anywhere}
+.dashboard-export-scope strong{font-size:20px;color:var(--text)}
+.dashboard-export-options{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;margin-top:16px}
+.dashboard-format{display:flex;flex-direction:column;gap:12px;padding:22px;border:1px solid var(--border);border-radius:14px;min-width:0;cursor:pointer;transition:box-shadow .15s,border-color .15s;background:var(--surface)}
+.dashboard-format>strong{font-size:19px}.dashboard-format>span:not(.dashboard-export-icon):not(.dashboard-view){font-size:14px;color:var(--muted)}
+.dashboard-format:hover{border-color:var(--primary);box-shadow:0 6px 18px #10182812}
+.dashboard-format:focus-visible{outline:3px solid var(--primary);outline-offset:3px}
+.dashboard-sheet{overflow:hidden;max-height:92dvh}
+.dashboard-sheet #modal-content{overflow:auto;max-height:calc(92dvh - 2px);overscroll-behavior:contain;min-width:0}
+.dashboard-sheet .modal-inner{min-width:0;padding-top:60px}
+.dashboard-sheet .modal-close{position:absolute;top:8px;right:10px;background:var(--surface);border:1px solid var(--border);border-radius:50%}
+.dashboard-sheet #dialog-title{padding-right:20px;overflow-wrap:anywhere}
+.dashboard-drilldown .table-scroll{overflow-x:auto;overscroll-behavior-x:contain;border:1px solid var(--border);border-radius:10px}
+.dashboard-drilldown table{min-width:620px;font-size:14px}
+.dashboard-drilldown th,.dashboard-drilldown td{font-size:14px}
+.dashboard-drilldown th{padding:13px 16px}
+.dashboard-drilldown td{min-width:140px;padding:16px;overflow-wrap:break-word}
+.dashboard-drilldown td:nth-child(3){font-variant-numeric:tabular-nums}
+.dashboard-drilldown .dashboard-money{text-align:right;white-space:nowrap}
+.dashboard-drilldown .pagination .button{min-height:44px}
+.dashboard-scroll-hint{display:none;color:var(--muted);font-size:12px;padding-bottom:10px}
+@media(max-width:600px){
+ dialog.dashboard-sheet{position:fixed;inset:auto 0 0;margin:0;width:100%;max-width:100%;max-height:92dvh;border:0;border-radius:22px 22px 0 0;animation:dashboard-sheet-in .18s ease-out}
+ .dashboard-sheet #modal-content{max-height:92dvh;padding-bottom:env(safe-area-inset-bottom,0px)}
+ .dashboard-sheet .modal-inner{padding:58px 18px 24px}
+ .dashboard-sheet .modal-close{top:8px;right:12px}
+ .dashboard-export-options{grid-template-columns:1fr;gap:12px}
+ .dashboard-format{padding:18px;gap:8px;min-height:172px}
+ .dashboard-export-scope{margin:16px 0;padding:14px;font-size:14px}
+ .dashboard-scroll-hint{display:block}
+ .dashboard-sheet .pagination{padding:16px 0}
+ .dashboard-sheet .dashboard-calculation dd{overflow-wrap:anywhere;max-width:100%}
+}
+@keyframes dashboard-sheet-in{from{transform:translateY(16px);opacity:.6}to{transform:translateY(0);opacity:1}}
+@media(prefers-reduced-motion:reduce){dialog.dashboard-sheet{animation:none}.dashboard-format{transition:none}}
