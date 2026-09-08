@@ -1,0 +1,1 @@
+{% extends 'api/base.html' %}{% block content %}<a class="button secondary" href="{% url 'api:dashboard' %}?{{ scope.query }}">← Dashboard</a><section class="card standalone-form">{% include 'api/partials/dashboard_detail.html' %}</section>{% endblock %}

@@ -1,0 +1,30 @@
+{% load ui %}
+<div class="modal-inner dashboard-drilldown">
+<h2 id="dialog-title">{{ title }}</h2>
+<p>{{ scope.marketer.get_full_name|default:scope.marketer.username }}{% if period %} · {{ period.name }}{% endif %}</p>
+{% if not period %}<p>Commission period has not been configured. Contact an administrator.</p>{% if setup_url %}<a class="button primary" data-modal href="{{ setup_url }}">Set commission period →</a>{% endif %}
+{% elif not scope.marketer %}<p>No permitted active marketer is available.</p>
+{% elif metric == 'after-base' or metric == 'commission' %}
+{% if metrics.configured %}
+<dl class="dashboard-calculation">
+<div><dt>Confirmed sales</dt><dd>TZS {{ metrics.sales|money }}</dd></div>
+<div><dt>Base amount</dt><dd>−TZS {{ metrics.base|money }}</dd></div>
+<div class="calculation-total"><dt>Amount after base</dt><dd>TZS {{ metrics.excess|money }}</dd></div>
+{% if metric == 'commission' %}<div><dt>Commission rate</dt><dd>{{ metrics.rate|floatformat:'-2' }}%</dd></div><div class="calculation-total"><dt>Commission earned</dt><dd>TZS {{ metrics.commission|money }}</dd></div>{% endif %}
+</dl><p>Commissionable amount cannot be below zero.</p>{% if metric == 'commission' %}<p>Expenditure does not reduce commission.</p>{% endif %}
+{% else %}<div class="dashboard-setup"><h3>Not configured</h3><p>Your commission policy needs administrator configuration.</p>{% if policy_url %}<a class="button primary" data-modal href="{{ policy_url }}">Set commission policy →</a>{% endif %}</div>{% endif %}
+{% else %}
+{% if scope.location and metric != 'sales' %}<p>{{ scope.location }} and its permitted descendants</p>{% endif %}
+<p class="dashboard-detail-total">{% if metric == 'sales' %}Total: TZS {{ metrics.sales|money }}{% elif metric == 'expenditure' %}Total: TZS {{ metrics.expenditure|money }}{% else %}{{ metrics.customers }} customer{{ metrics.customers|pluralize }}{% endif %}</p>
+<div class="table-scroll" tabindex="0" aria-label="{{ title }} records"><table><thead><tr>
+{% if metric == 'sales' %}<th>Reference</th><th>Customer</th><th>Amount</th><th>Date</th>
+{% elif metric == 'expenditure' %}<th>Title</th><th>Type</th><th>Amount</th><th>Location</th><th>Vendor</th><th>Date</th><th>Payment method</th>
+{% else %}<th>Customer name</th><th>Phone</th><th>Location</th><th>Date</th>{% endif %}
+</tr></thead><tbody>{% for row in page %}<tr>
+{% if metric == 'sales' %}<td>{{ row.reference }}</td><td>{{ row.customer|default:'—' }}</td><td>TZS {{ row.amount|money }}</td><td>{{ row.date|date:'d M Y' }}</td>
+{% elif metric == 'expenditure' %}<td>{{ row.title }}</td><td>{{ row.expenditure_type }}</td><td>TZS {{ row.amount|money }}</td><td>{{ row.location|default:'—' }}</td><td>{{ row.vendor|default:'—' }}</td><td>{{ row.date|date:'d M Y' }}</td><td>{{ row.payment_method|default:'—' }}</td>
+{% else %}<td>{{ row.name }}</td><td>{{ row.phone }}</td><td>{{ row.location|default:'—' }}</td><td>{{ row.date|date:'d M Y' }}</td>{% endif %}
+</tr>{% empty %}<tr><td colspan="7"><div class="empty-state">No {{ title|lower }} in this scope.</div></td></tr>{% endfor %}</tbody></table></div>
+{% if page.has_other_pages %}<nav class="pagination" aria-label="{{ title }} pages">{% if page.has_previous %}<a class="button secondary" data-modal href="{% url 'api:dashboard-detail' metric %}?{{ scope.query }}&amp;page={{ page.previous_page_number }}">← Previous</a>{% endif %}<span>Page {{ page.number }} of {{ page.paginator.num_pages }} · {{ page.paginator.count }} records</span>{% if page.has_next %}<a class="button secondary" data-modal href="{% url 'api:dashboard-detail' metric %}?{{ scope.query }}&amp;page={{ page.next_page_number }}">Next →</a>{% endif %}</nav>{% endif %}
+{% endif %}
+</div>

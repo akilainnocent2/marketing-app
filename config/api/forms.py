@@ -121,9 +121,13 @@ class PeriodForm(forms.ModelForm):
     name = forms.CharField(required=False, max_length=100, help_text='Optional. Leave blank to use the date range.')
     class Meta:
         model=CommissionPeriod
-        fields=['name','start','end','closed']
+        fields=['name','start','end','closed','is_default']
+        labels={'is_default': 'Use as default commission period'}
         widgets={x:forms.DateInput(format='%Y-%m-%d', attrs={'type':'date'}) for x in ('start','end')}
         help_texts={'start': 'Periods may overlap.', 'end': 'Choose the same day or any later date.'}
+    def _get_validation_exclusions(self):
+        return super()._get_validation_exclusions() | {'is_default'}
+
     def clean(self):
         d=super().clean()
         if d.get('start') and d.get('end'):

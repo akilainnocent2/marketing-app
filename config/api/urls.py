@@ -3,6 +3,7 @@ from django.contrib.auth import views as auth
 from . import views, shop_sso
 app_name='api'
 urlpatterns=[
+ path('dashboard/details/<str:metric>/',views.dashboard_detail,name='dashboard-detail'),
  path('accounts/sso/shop/start/',shop_sso.shop_sso_start,name='shop_sso_start'),
  path('accounts/sso/shop/consume/',shop_sso.shop_sso_consume,name='shop_sso_consume'),
  path('',views.dashboard,name='home'),path('dashboard/',views.dashboard,name='dashboard'),

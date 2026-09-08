@@ -2,7 +2,7 @@ import uuid
 from decimal import Decimal
 from django.conf import settings
 from django.core.validators import MinValueValidator, MaxValueValidator
-from django.db import models
+from django.db import models, router, transaction
 from django.utils import timezone
 
 
@@ -106,9 +106,21 @@ class CommissionPeriod(models.Model):
     start = models.DateField()
     end = models.DateField()
     closed = models.BooleanField(default=False)
+    is_default = models.BooleanField(default=False)
     class Meta:
         ordering = ['-start']
-        constraints = [models.CheckConstraint(condition=models.Q(end__gte=models.F('start')), name='valid_period')]
+        constraints = [models.CheckConstraint(condition=models.Q(end__gte=models.F('start')), name='valid_period'),
+                       models.UniqueConstraint(fields=['is_default'], condition=models.Q(is_default=True), name='one_default_commission_period')]
+    def save(self, *args, **kwargs):
+        using = kwargs.get('using') or router.db_for_write(type(self), instance=self)
+        with transaction.atomic(using=using):
+            if self.is_default and (kwargs.get('update_fields') is None or 'is_default' in kwargs['update_fields']):
+                # Serialize switches across existing periods; the unique index also
+                # protects concurrent first-period creation and direct updates.
+                list(type(self).objects.using(using).select_for_update().order_by('pk').values_list('pk', flat=True))
+                type(self).objects.using(using).filter(is_default=True).exclude(pk=self.pk).update(is_default=False)
+            super().save(*args, **kwargs)
+
     def __str__(self): return self.name
 
 

@@ -6,8 +6,8 @@ from .forms import *
 REGISTRY={
  'customers':(Customer,CustomerForm,'Customers','Marketing',['name','phone','location','potential','date','marketer','status'],['name','phone']),
  'sales':(Sale,SaleForm,'Sales','Marketing',['reference','customer','amount','date','marketer','status'],['reference','description']),
- 'expenditures':(Expenditure,ExpenditureForm,'Expenditure','Marketing',['title','expenditure_type','amount','date','marketer','status'],['title','reference']),
- 'periods':(CommissionPeriod,PeriodForm,'Commission periods','Settings',['name','start','end','closed'],['name']),
+ 'expenditures':(Expenditure,ExpenditureForm,'Expenditure','Marketing',['title','expenditure_type','amount','location','date','marketer','status'],['title','reference']),
+ 'periods':(CommissionPeriod,PeriodForm,'Commission periods','Settings',['name','start','end','closed','is_default'],['name']),
  'commissions':(CommissionPolicy,PolicyForm,'Commission policies','Settings',['marketer','period','base','rate','active'],['marketer__username']),
  'expenditure-types':(ExpenditureType,TypeForm,'Expenditure types','Settings',['name','active'],['name']),
  'locations':(Location,LocationForm,'Location management','Settings',['name','level','parent','source','active'],['name']),

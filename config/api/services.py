@@ -62,3 +62,8 @@ def commission_batch(users,period):
         if policy:c.update(calculate_commission(sales,policy.base,policy.rate))
         result.append(c)
     return result
+
+
+def get_default_commission_period():
+    """Dashboard configuration only; never infer an all-time or GET period."""
+    return CommissionPeriod.objects.filter(is_default=True).first()

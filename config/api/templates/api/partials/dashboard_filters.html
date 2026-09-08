@@ -1,0 +1,7 @@
+<form method="get" action="{% url 'api:dashboard' %}" class="card dashboard-filters" data-dashboard-filter hx-get="{% url 'api:dashboard' %}" hx-target="#dashboard-content" hx-sync="#dashboard-content:replace" hx-push-url="true">
+<label for="dashboard-marketer">Marketer
+{% if scope.options %}<select id="dashboard-marketer" name="marketer" data-lookup="dashboard-marketer">{% for marketer in scope.options %}<option value="{{ marketer.pk }}" {% if marketer == scope.marketer %}selected{% endif %}>{{ marketer.get_full_name|default:marketer.username }}</option>{% endfor %}</select>
+{% else %}<strong class="dashboard-selected">{{ scope.marketer.get_full_name|default:scope.marketer.username|default:'No marketer available' }}</strong>{% endif %}</label>
+<label for="dashboard-location">Location<select id="dashboard-location" name="location" data-lookup="location" data-empty-label="All locations"><option value="">All locations</option>{% if scope.location %}<option value="{{ scope.location.pk }}" selected>{{ scope.location }}</option>{% endif %}</select></label>
+<button class="button secondary dashboard-apply" type="submit">Apply filters</button>
+</form>

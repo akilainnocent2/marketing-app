@@ -25,3 +25,15 @@ def eligible_users(user):
 def total(qs):
     from decimal import Decimal
     return qs.aggregate(value=Sum('amount'))['value'] or Decimal('0.00')
+
+
+def location_descendants(user, root):
+    """Include the selected location and permitted descendants (five levels)."""
+    ids = [root.pk]
+    frontier = ids
+    for _ in range(4):
+        frontier = list(locations(user).filter(parent_id__in=frontier).values_list('pk', flat=True))
+        if not frontier:
+            break
+        ids.extend(frontier)
+    return ids

@@ -12,7 +12,7 @@ admin.site.site_header = 'MarketFlow maintenance'
 @admin.register(models.CommissionPeriod)
 class CommissionPeriodAdmin(admin.ModelAdmin):
     form = PeriodForm
-    list_display = ('name', 'start', 'end', 'closed')
+    list_display = ('name', 'start', 'end', 'closed', 'is_default')
     list_filter = ('closed',)
     search_fields = ('name',)
 

@@ -196,7 +196,7 @@ class ReportingTests(TestCase):
             u=get_user_model().objects.create_user(name);u.groups.add(group);cls.users.append(u)
             Sale.objects.create(reference=name,amount=sales,status='confirmed',date=date(2025,1,15),marketer=u,created_by=u,updated_by=u)
             CommissionPolicy.objects.create(marketer=u,period=cls.period,base=base,rate=rate)
-    def get_report(self,ids=None,path='/dashboard/',**extra):
+    def get_report(self,ids=None,path='/reports/',**extra):
         self.client.force_login(self.admin)
         params={'period':self.period.pk,**extra}
         if ids is not None:params['marketer']=ids
@@ -204,7 +204,7 @@ class ReportingTests(TestCase):
         self.assertEqual(r.status_code,200,r.content[:500])
         return r
     def test_exact_and_selected_global_on_every_screen(self):
-        for path in ['/dashboard/','/','/reports/','/marketing/sales/','/reports/sales/']:
+        for path in ['/reports/','/marketing/sales/','/reports/sales/']:
             r=self.get_report([self.users[0].pk],path)
             f=r.context['finance'];s=f['selected'];g=f['global_summary']
             self.assertEqual((s['sales'],s['excess'],s['commission'],s['rate_label']),(7000000,4000000,120000,'3%'))
@@ -230,20 +230,20 @@ class ReportingTests(TestCase):
         r=self.get_report([self.users[0].pk]*2);self.assertEqual(r.context['finance']['selected']['count'],1)
         self.assertEqual(self.get_report(['']).context['finance']['selected']['count'],0)
         for bad in ['xyz','999999999']:
-            self.assertEqual(self.client.get('/dashboard/',{'period':self.period.pk,'marketer':bad}).status_code,400)
-        self.assertEqual(self.client.get('/dashboard/',{'period':'xyz'}).status_code,400)
+            self.assertEqual(self.client.get('/reports/',{'period':self.period.pk,'marketer':bad}).status_code,400)
+        self.assertEqual(self.client.get('/reports/',{'period':'xyz'}).status_code,400)
         reporter=get_user_model().objects.create_user('readonly')
         reporter.user_permissions.add(*Permission.objects.filter(content_type__app_label='api',codename__in=['view_reports','view_sale','view_all_reports','view_all_marketing']))
         self.client.force_login(reporter)
-        r=self.client.get('/dashboard/',{'period':self.period.pk,'marketer':self.users[0].pk})
+        r=self.client.get('/reports/',{'period':self.period.pk,'marketer':self.users[0].pk})
         self.assertEqual(r.context['finance']['global_summary']['count'],3)
         self.assertEqual(self.client.get('/lookups/report-marketer/',{'period':self.period.pk}).status_code,200)
         self.assertEqual(self.client.get('/lookups/marketer/').status_code,403)
         self.client.force_login(self.users[0])
-        for path in ['/dashboard/','/reports/sales/','/reports/sales/pdf/','/lookups/report-marketer/']:
+        for path in ['/reports/','/reports/sales/','/reports/sales/pdf/','/lookups/report-marketer/']:
             r=self.client.get(path,{'period':self.period.pk,'marketer':self.users[1].pk})
             self.assertIn(r.status_code,[400,403,404])
-        r=self.client.get('/dashboard/',{'period':self.period.pk});self.assertIsNone(r.context['finance']['global_summary']);self.assertNotContains(r,'All authorized marketers')
+        r=self.client.get('/reports/',{'period':self.period.pk});self.assertIsNone(r.context['finance']['global_summary']);self.assertNotContains(r,'All authorized marketers')
     def test_detail_filters_status_and_period(self):
         for status in ['draft','void']:
             Sale.objects.create(reference=status,amount=9000000,status=status,date=date(2025,1,15),marketer=self.users[0],created_by=self.users[0],updated_by=self.users[0])
@@ -260,7 +260,7 @@ class ReportingTests(TestCase):
         r=self.get_report(page=2);self.assertEqual(len(r.context['cards']),1)
         self.assertEqual(r.context['finance']['selected']['count'],19)
         self.client.force_login(self.admin)
-        r=self.client.get('/dashboard/');self.assertIsNone(r.context['finance']['period']);self.assertContains(r,'All-time confirmed sales')
+        r=self.client.get('/reports/');self.assertIsNone(r.context['finance']['period']);self.assertContains(r,'All-time confirmed sales')
     def test_policy_prefill_stale_and_retry(self):
         self.client.force_login(self.admin);policy=CommissionPolicy.objects.get(marketer=self.users[0])
         url=reverse('api:edit',args=['commissions',policy.pk])
@@ -299,10 +299,10 @@ class ReportingTests(TestCase):
         r=self.get_report([u.pk for u in self.users[:2]],'/marketing/sales/',columns=['reference','amount'],sort='amount')
         self.assertContains(r,'name="marketer" value="'+str(self.users[1].pk)+'"')
         self.assertIn('HX-Request',r['Vary'])
-        r=self.client.get('/dashboard/',{'period':self.period.pk},HTTP_HX_REQUEST='true',HTTP_HX_HISTORY_RESTORE_REQUEST='true')
+        r=self.client.get('/reports/',{'period':self.period.pk},HTTP_HX_REQUEST='true',HTTP_HX_HISTORY_RESTORE_REQUEST='true')
         self.assertContains(r,'<!doctype html>')
         for params in [{'from':'bad'},{'from':'2025-02-01','to':'2025-01-01'},{'sort':'password'},{'sort':'--amount'},{'columns':['password']},{'min':'NaN'}]:
-            self.assertEqual(self.client.get('/dashboard/',{'period':self.period.pk,**params}).status_code,400)
+            self.assertEqual(self.client.get('/reports/',{'period':self.period.pk,**params}).status_code,400)
     def test_bulk_stale_preview_atomic_and_popup(self):
         self.client.force_login(self.admin)
         data={'marketers':[u.pk for u in self.users[:2]],'period':self.period.pk,'base':1000000,'rate':2,'reason':'Approved change','token':str(uuid.uuid4())}
@@ -334,7 +334,7 @@ class ReportingTests(TestCase):
         user=get_user_model().objects.create_user('customer_reader')
         user.user_permissions.add(*Permission.objects.filter(content_type__app_label='api',codename__in=['view_reports','view_customer']))
         self.client.force_login(user)
-        r=self.client.get('/dashboard/');self.assertContains(r,'Customers');self.assertNotContains(r,'17,000,000')
+        r=self.client.get('/dashboard/');self.assertContains(r,'Commission period is not configured.');self.assertNotContains(r,'17,000,000')
     def test_generic_administrator_group_is_not_business_designation(self):
         group=Group.objects.create(name='Administrator')
         group.permissions.add(*Permission.objects.filter(content_type__app_label__in=['api','auth']))
@@ -352,5 +352,5 @@ class ReportingTests(TestCase):
         self.assertEqual(r.context['finance']['selected']['count'],43)
         self.assertEqual(len(r.context['finance']['options']),30)
         self.assertEqual(r.context['count'],3)
-        r=self.client.get('/dashboard/',{'period':self.period.pk,'selection':'all','marketer':'forged'})
+        r=self.client.get('/reports/',{'period':self.period.pk,'selection':'all','marketer':'forged'})
         self.assertEqual(r.status_code,400)

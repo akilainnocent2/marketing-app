@@ -22,7 +22,7 @@ from .reporting import report_context, organization, cohort
 from .models import *
 from .forms import SignupForm
 from .registry import REGISTRY,permission
-from .selectors import scoped,require,locations,eligible_users,total
+from .selectors import scoped,require,locations,eligible_users,total,location_descendants
 from .services import commission,audit,save_policy,financial_open
 
 class RateLimitedLogin(LoginView):
@@ -101,10 +101,10 @@ def filtered(request,kind,qs):
                 qs=qs.filter(**{lookup:amount})
         if kind=='customers' and request.GET.get('potential') in ['yes','no']: qs=qs.filter(potential=request.GET['potential']=='yes')
     if kind in ['customers','expenditures'] and request.GET.get('location'):
-        root=get_object_or_404(locations(request.user),pk=request.GET['location'])
-        ids=[root.pk]; frontier=[root.pk]
-        for _ in range(4):
-            frontier=list(locations(request.user).filter(parent_id__in=frontier).values_list('pk',flat=True));ids.extend(frontier)
+        try: location_id=int(request.GET['location'])
+        except ValueError: raise ValidationError('Invalid location.')
+        root=get_object_or_404(locations(request.user),pk=location_id)
+        ids=location_descendants(request.user,root)
         qs=qs.filter(location_id__in=ids)
     if kind=='sales' and request.GET.get('period'):
         try: period_id=int(request.GET['period'])
@@ -161,6 +161,8 @@ def listing(request,kind):
     except ValidationError as e: error=' '.join(e.messages); qs=qs.none()
     model,form,title,module,fields,_=REGISTRY[kind]
     if issubclass(model,OwnedRecord): qs=qs.select_related('marketer')
+    if kind in ['customers','expenditures']: qs=qs.select_related('location')
+    if kind=='expenditures': qs=qs.select_related('expenditure_type')
     page=Paginator(qs,15).get_page(request.GET.get('page'))
     params=request.GET.copy(); params.pop('page',None)
     if finance and finance['period'] and not params.get('period'):params['period']=finance['period'].pk
@@ -171,6 +173,7 @@ def listing(request,kind):
     ctx['selected_marketers']=request.GET.getlist('marketer')
     ctx['eligible_detail_total']=total(qs.filter(status='confirmed')) if kind=='sales' else None
     ctx['statuses']=model._meta.get_field('status').choices if issubclass(model,OwnedRecord) else []
+    ctx['location_options']=locations(request.user).filter(pk=request.GET.get('location')) if request.GET.get('location','').isdigit() else []
     ctx['period_options']=CommissionPeriod.objects.all() if kind=='sales' else []
     ctx['filter_users']=[] if finance else (cohort(request.user) if organization(request.user) else [])
     return render(request,'api/partials/list_content.html' if fragment_request(request) else 'api/list.html',ctx)
@@ -285,7 +288,7 @@ def edit(request,kind,pk=None):
                 if owned:
                     history['after']={f:str(getattr(instance,f)) for f in ['date','status','version']+(['amount'] if hasattr(instance,'amount') else [])}
                     history['reason']=form.cleaned_data.get('correction_reason','')
-                audit(request.user,'updated' if pk else 'created',instance,history or {'fields':[x for x in form.changed_data if x in ['amount','status','base','rate','active','is_active','potential','date']]})
+                audit(request.user,'updated' if pk else 'created',instance,history or {'fields':[x for x in form.changed_data if x in ['amount','status','base','rate','active','is_active','potential','date','is_default']]})
             return saved_response(request,kind,instance)
         except (ValidationError,IntegrityError) as e:
             form.add_error(None,' '.join(e.messages) if isinstance(e,ValidationError) else 'A matching record already exists. Refresh and try again.')
@@ -409,25 +412,31 @@ def receipt(request,pk):
 
 
 @login_required
+@vary_on_headers('HX-Request', 'HX-History-Restore-Request')
 def dashboard(request):
     if not request.user.has_perm('api.view_reports'):
         for kind in REGISTRY:
             if request.user.has_perm(permission(kind)): return redirect('api:list',kind=kind)
         return render(request,'api/no_access.html',status=403)
-    return report_view(request,False)
+    from .dashboard import get_dashboard_scope, dashboard_context
+    try:
+        ctx = dashboard_context(get_dashboard_scope(request.user, request.GET))
+    except ValidationError as exc:
+        return HttpResponse(' '.join(exc.messages), status=400)
+    return render(request, 'api/partials/dashboard_content.html' if fragment_request(request) else 'api/dashboard.html', ctx)
 
 
 @login_required
 def reports(request):
     require(request.user,'api.view_reports')
-    return report_view(request,True)
+    return report_view(request)
 
 
 def fragment_request(request):
     return request.headers.get('HX-Request') and request.headers.get('HX-History-Restore-Request')!='true'
 
 @vary_on_headers('HX-Request','HX-History-Restore-Request')
-def report_view(request,is_report):
+def report_view(request):
     if not request.user.has_perm('api.view_sale'):
         metrics=[]
         for kind,status in [('customers','finalized'),('expenditures','recorded')]:
@@ -435,7 +444,7 @@ def report_view(request,is_report):
                 records=scoped(REGISTRY[kind][0],request.user).filter(status=status)
                 if not request.user.has_perm('api.view_all_reports'):records=records.filter(marketer=request.user)
                 metrics.append({'kind':kind,'value':records.count() if kind=='customers' else total(records)})
-        ctx={'title':'Reports overview' if is_report else 'Dashboard','metrics':metrics,'dashboard_partial':'api/partials/non_sales_dashboard.html'}
+        ctx={'title':'Reports overview','metrics':metrics,'dashboard_partial':'api/partials/non_sales_dashboard.html'}
         return render(request,'api/partials/non_sales_dashboard.html' if fragment_request(request) else 'api/dashboard.html',ctx)
     try: finance=report_context(request.user,request.GET)
     except ValidationError as e: return HttpResponse(' '.join(e.messages),status=400)
@@ -452,12 +461,12 @@ def report_view(request,is_report):
     if period:
         expenses=expenses.filter(date__range=(period.start,period.end))
         customers=customers.filter(date__range=(period.start,period.end))
-    ctx=dict(title='Reports overview' if is_report else 'Dashboard',is_report=is_report,finance=finance,
+    ctx=dict(title='Reports overview',is_report=True,finance=finance,
              period=period,periods=CommissionPeriod.objects.all(),cards=page,marketer_page=page,
              chart=chart,recent=sales.select_related('marketer','customer')[:5],region='#dashboard-content',
              customer_count=customers.count() if request.user.has_perm('api.view_customer') else None,
              expense_total=total(expenses) if request.user.has_perm('api.view_expenditure') else None)
-    return render(request,'api/partials/dashboard_content.html' if fragment_request(request) else 'api/dashboard.html',ctx)
+    return render(request,'api/partials/report_overview.html' if fragment_request(request) else 'api/dashboard.html',dict(ctx, dashboard_partial='api/partials/report_overview.html'))
 
 @login_required
 @vary_on_headers('HX-Request','HX-History-Restore-Request')
@@ -547,8 +556,13 @@ def profile(request):
 @require_GET
 def lookup(request,kind):
     if kind=='location':
-        if not (request.user.has_perm('api.view_location') or request.user.has_perm('api.add_customer')):raise PermissionDenied
+        if not (request.user.has_perm('api.view_location') or request.user.has_perm('api.add_customer') or request.user.has_perm('api.view_reports') or request.user.has_perm('api.view_expenditure')):raise PermissionDenied
         qs=locations(request.user).filter(name__icontains=request.GET.get('q','')[:100])
+    elif kind=='dashboard-marketer':
+        require(request.user,'api.view_reports')
+        from .services import get_default_commission_period
+        q=request.GET.get('q','')[:100]
+        qs=cohort(request.user,get_default_commission_period()).filter(Q(username__icontains=q)|Q(first_name__icontains=q)|Q(last_name__icontains=q))
     elif kind=='report-marketer':
         require(request.user,'api.view_reports');require(request.user,'api.view_sale')
         from .forms import ReportFilterForm
@@ -658,3 +672,26 @@ def remove_setting(request,kind,pk):
         except (ProtectedError,ValidationError) as e:
             return form_response(request,{'title':'Record retained','error':' '.join(e.messages) if isinstance(e,ValidationError) else 'This record is referenced by historical data. Deactivate it instead.'},422)
     return form_response(request,{'title':'Delete '+str(obj),'confirmation':('Delete this period and its commission policies? Sales and policy revisions will be retained; commission totals will be recalculated.' if kind=='periods' else 'Delete this commission policy? Sales and policy revisions will be retained; commission totals will be recalculated.' if kind=='commissions' else 'Delete this record only if it has no protected history. Referenced records will be retained.'),'kind':kind,'action':'Delete','post_url':request.path})
+
+
+@login_required
+@require_GET
+@vary_on_headers('HX-Request', 'HX-History-Restore-Request')
+def dashboard_detail(request, metric):
+    from .dashboard import (get_dashboard_scope, dashboard_context, get_dashboard_sales,
+                            get_dashboard_expenditures, get_dashboard_customers)
+    titles = {'sales': 'Confirmed Sales', 'expenditure': 'Recorded Expenditure',
+              'customers': 'Customers', 'after-base': 'Commission Basis', 'commission': 'Commission Details'}
+    if metric not in titles:
+        raise Http404
+    require(request.user, 'api.view_' + {'expenditure': 'expenditure', 'customers': 'customer'}.get(metric, 'sale'))
+    try:
+        scope = get_dashboard_scope(request.user, request.GET)
+        ctx = dashboard_context(scope)
+    except ValidationError as exc:
+        return HttpResponse(' '.join(exc.messages), status=400)
+    queries = {'sales': get_dashboard_sales, 'expenditure': get_dashboard_expenditures, 'customers': get_dashboard_customers}
+    if metric in queries and scope.period and scope.marketer:
+        ctx['page'] = Paginator(queries[metric](scope), 20).get_page(request.GET.get('page'))
+    ctx.update(title=titles[metric], metric=metric)
+    return render(request, 'api/partials/dashboard_detail.html' if fragment_request(request) else 'api/dashboard_detail.html', ctx)

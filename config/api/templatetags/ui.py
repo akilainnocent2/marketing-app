@@ -83,6 +83,8 @@ def configuration_notifications(context):
     from django.http import QueryDict
     from ..reporting import report_context
     user = context['request'].user
+    if context.get('scope') is not None:
+        return {key: context.get(key) for key in ['scope', 'metrics', 'setup_url', 'policy_url', 'perms']}
     finance = context.get('finance')
     if finance is None and user.has_perm('api.view_reports') and user.has_perm('api.view_sale'):
         finance = report_context(user, QueryDict(''))

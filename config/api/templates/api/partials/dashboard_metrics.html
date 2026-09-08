@@ -1,0 +1,16 @@
+{% load ui %}
+<div class="dashboard-metrics">
+{% if perms.api.view_sale %}
+<a class="card dashboard-metric" data-modal href="{% url 'api:dashboard-detail' 'sales' %}?{{ scope.query }}" aria-label="View Total Sales details"><span class="dashboard-metric-title">Total Sales <span aria-hidden="true">↗</span></span><strong>TZS {{ metrics.sales|money }}</strong><small>Confirmed sales · {{ period.name }}</small><span class="dashboard-view">View details →</span></a>
+{% endif %}
+{% if perms.api.view_expenditure %}
+<a class="card dashboard-metric" data-modal href="{% url 'api:dashboard-detail' 'expenditure' %}?{{ scope.query }}" aria-label="View Total Expenditure details"><span class="dashboard-metric-title">Total Expenditure <span aria-hidden="true">↗</span></span><strong>TZS {{ metrics.expenditure|money }}</strong><small>Recorded{% if scope.location %} · {{ scope.location }}{% endif %}</small><span class="dashboard-view">View details →</span></a>
+{% endif %}
+{% if perms.api.view_sale %}
+<a class="card dashboard-metric" data-modal href="{% if policy_url %}{{ policy_url }}{% else %}{% url 'api:dashboard-detail' 'after-base' %}?{{ scope.query }}{% endif %}" aria-label="View Amount After Base details"><span class="dashboard-metric-title">Amount After Base <span aria-hidden="true">↗</span></span><strong>{% if metrics.configured %}TZS {{ metrics.excess|money }}{% else %}Not configured{% endif %}</strong><small>{% if metrics.configured %}Base: TZS {{ metrics.base|money }}{% else %}Commission policy required{% endif %}</small><span class="dashboard-view">{% if policy_url %}Set policy{% else %}View details{% endif %} →</span></a>
+<a class="card dashboard-metric" data-modal href="{% if policy_url %}{{ policy_url }}{% else %}{% url 'api:dashboard-detail' 'commission' %}?{{ scope.query }}{% endif %}" aria-label="View Total Commission details"><span class="dashboard-metric-title">Total Commission <span aria-hidden="true">↗</span></span>{% if metrics.configured %}<span class="dashboard-rate">{{ metrics.rate|floatformat:'-2' }}%</span><strong>TZS {{ metrics.commission|money }}</strong>{% else %}<strong>Not configured</strong><small>Commission policy required</small>{% endif %}<span class="dashboard-view">{% if policy_url %}Set policy{% else %}View details{% endif %} →</span></a>
+{% endif %}
+{% if perms.api.view_customer %}
+<a class="card dashboard-metric" data-modal href="{% url 'api:dashboard-detail' 'customers' %}?{{ scope.query }}" aria-label="View Total Customers details"><span class="dashboard-metric-title">Total Customers <span aria-hidden="true">↗</span></span><strong>{{ metrics.customers }}</strong><small>Finalized · {{ period.name }}{% if scope.location %} · {{ scope.location }}{% endif %}</small><span class="dashboard-view">View details →</span></a>
+{% endif %}
+</div>
